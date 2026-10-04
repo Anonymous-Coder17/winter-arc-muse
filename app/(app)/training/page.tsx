@@ -166,6 +166,7 @@ export default function TrainingPage() {
           <TaskForm
             dateKey={todayKey()}
             presetKind="workout"
+            showDateField
             onSaved={() => {
               setAdding(false);
               setNonce((n) => n + 1);

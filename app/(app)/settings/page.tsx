@@ -11,6 +11,7 @@ import {
   LoadingBlock,
   SegControl,
 } from "@/components/ui";
+import { formatLong, todayKey } from "@/lib/dates";
 import type { Appearance, Challenge, Profile } from "@/lib/types";
 
 function ChallengeForm({
@@ -23,7 +24,7 @@ function ChallengeForm({
   const [title, setTitle] = useState(initial?.title ?? "30-Day Transformation");
   const [subtitle, setSubtitle] = useState(initial?.subtitle ?? "");
   const [startDate, setStartDate] = useState(
-    initial?.start_date ?? new Date().toISOString().slice(0, 10)
+    initial?.start_date ?? todayKey()
   );
   const [duration, setDuration] = useState(
     initial ? String(initial.duration_days) : "30"
@@ -141,6 +142,8 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -189,17 +192,25 @@ export default function SettingsPage() {
   }, [nonce]);
 
   async function saveProfile() {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return;
-    const { error } = await supabase
-      .from("profiles")
-      .upsert({ id: user.id, display_name: displayName.trim() || null });
-    if (!error) {
+    if (savingProfile) return;
+    setSavingProfile(true);
+    setProfileError(null);
+    try {
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) throw new Error("Not signed in.");
+      const { error } = await supabase
+        .from("profiles")
+        .upsert({ id: user.id, display_name: displayName.trim() || null });
+      if (error) throw error;
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setProfileError(err instanceof Error ? err.message : "Could not save profile.");
+    } finally {
+      setSavingProfile(false);
     }
   }
 
@@ -252,8 +263,12 @@ export default function SettingsPage() {
             />
           </Field>
           <div className="flex items-center gap-3">
-            <button className="btn-secondary" onClick={saveProfile}>
-              Save profile
+            <button
+              className="btn-secondary"
+              onClick={saveProfile}
+              disabled={savingProfile}
+            >
+              {savingProfile ? "Saving…" : "Save profile"}
             </button>
             {saved && (
               <p className="text-xs text-emerald-600 dark:text-emerald-400">
@@ -261,6 +276,11 @@ export default function SettingsPage() {
               </p>
             )}
           </div>
+          {profileError && (
+            <p className="text-sm text-red-500 dark:text-red-400" role="alert">
+              {profileError}
+            </p>
+          )}
         </div>
       </section>
 
@@ -272,7 +292,7 @@ export default function SettingsPage() {
             <div>
               <p className="text-sm font-medium t-primary">{challenge.title}</p>
               <p className="text-xs t-faint">
-                {challenge.start_date} · {challenge.duration_days} days
+                {formatLong(challenge.start_date)} · {challenge.duration_days} days
               </p>
             </div>
             <div>

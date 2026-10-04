@@ -7,7 +7,7 @@ import { WeekView } from "@/components/calendar/WeekView";
 import { MonthView } from "@/components/calendar/MonthView";
 import { PlanTomorrow } from "@/components/calendar/PlanTomorrow";
 import { EmptyState, ErrorState, LoadingBlock, SegControl } from "@/components/ui";
-import { addDays, isToday, todayKey } from "@/lib/dates";
+import { addDays, formatLong, isToday, todayKey } from "@/lib/dates";
 import { challengeDayNumber, daysRemaining } from "@/lib/types";
 import Link from "next/link";
 
@@ -61,7 +61,7 @@ export default function CalendarPage() {
                 </p>
               ) : (
                 <p className="page-title mt-1">
-                  Starts {challenge.start_date}
+                  Starts {formatLong(challenge.start_date)}
                 </p>
               )}
               <p className="page-sub">

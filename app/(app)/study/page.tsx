@@ -169,6 +169,7 @@ export default function StudyPage() {
           <TaskForm
             dateKey={todayKey()}
             presetKind="study"
+            showDateField
             onSaved={() => {
               setAdding(false);
               setNonce((n) => n + 1);

@@ -9,8 +9,10 @@ import {
 } from "@/components/ui";
 import {
   addDays,
+  formatLong,
   formatShort,
   todayKey,
+  utcToDayKey,
   weekStartMonday,
 } from "@/lib/dates";
 import { challengeDayNumber, daysRemaining } from "@/lib/types";
@@ -122,8 +124,9 @@ export default function ProgressPage() {
       out.push({
         key,
         habitsDone: dayLogs.filter((x) => x.status === "done").length,
+        // occurred_at is UTC on the wire — attribute to the LOCAL day.
         incidents: incidents.filter(
-          (x) => x.occurred_at.slice(0, 10) === key
+          (x) => utcToDayKey(x.occurred_at) === key
         ).length,
         limitsOver: limits.filter((lim) => {
           const log = limitLogs.find(
@@ -191,7 +194,7 @@ export default function ProgressPage() {
             </p>
           ) : (
             <p className="text-lg font-semibold t-primary mt-1">
-              Starts {challenge.start_date}
+              Starts {formatLong(challenge.start_date)}
             </p>
           )}
           <div className="h-2 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden mt-3">

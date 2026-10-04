@@ -39,7 +39,6 @@
     @apply px-3.5 py-2 rounded-lg text-sm font-medium t-secondary transition-colors min-h-[40px]
       hover:t-primary;
   }
-  .seg-btn-active { @apply bg-[#5A6AE0]/15 text-[#5A6AE0] dark:text-[#AAB6FF] t-primary; }
   .seg-btn-active { @apply !text-[#3D4AC4] dark:!text-[#C3CCFF] bg-[#E4E8FF] dark:bg-[#5A6AE0]/25; }
 
   .card-pad { @apply p-4 sm:p-5; }

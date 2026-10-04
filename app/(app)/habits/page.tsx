@@ -17,7 +17,7 @@ import {
   UsageLimitForm,
 } from "@/components/habits/configForms";
 import { toggleHabitDone, markHabitNotDone } from "@/lib/habits";
-import { timeLabel, todayKey } from "@/lib/dates";
+import { formatLong, timeLabel, todayKey } from "@/lib/dates";
 import type {
   AbstinenceRule,
   Habit,
@@ -280,7 +280,7 @@ export default function HabitsPage() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium t-primary">{r.name}</p>
                     <p className="text-xs t-faint">
-                      since {r.start_date}
+                      since {formatLong(r.start_date)}
                       {!r.is_active ? " · paused" : ""}
                     </p>
                   </div>
