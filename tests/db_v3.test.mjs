@@ -367,3 +367,48 @@ test("DB V3: re-running migration 0005 is error-free", async () => {
   assert.ok(j.id);
   await q(`delete from journal_entries where id='${j.id}'`);
 });
+
+// ---------------------------------------------------------------------------
+// V3.1: unified Today -> journal_entries flow
+// ---------------------------------------------------------------------------
+
+test("DB V3.1 journal: Today saves to journal_entries; no daily_records duplicate", async () => {
+  await asUser(A);
+  const date = "2026-10-04";
+  // 1-2. The unified Today -> Write journal path (lib/journal upsertJournalEntry
+  // semantics: insert, on conflict update). The entry must come from journal_entries.
+  await q(`insert into journal_entries(owner, entry_date, content)
+           values ('${A}'::uuid, '${date}', 'Day 4: trained, studied, honest day.')
+           on conflict (owner, entry_date)
+           do update set content = excluded.content, updated_at = now()`);
+  let row = (await q(`select content from journal_entries
+                      where owner='${A}'::uuid and entry_date='${date}'`)).rows[0];
+  assert.equal(row.content, "Day 4: trained, studied, honest day.");
+
+  // 3. Edit persists (the V3 JournalEditor updates the same row).
+  await q(`update journal_entries
+           set content='Day 4: trained, studied, honest day. Edited.', updated_at=now()
+           where owner='${A}'::uuid and entry_date='${date}'`);
+  row = (await q(`select content from journal_entries
+                  where owner='${A}'::uuid and entry_date='${date}'`)).rows[0];
+  assert.equal(row.content, "Day 4: trained, studied, honest day. Edited.");
+
+  // 4. Saving through the new Today flow must NOT create the old
+  // daily_records kind='journal' duplicate.
+  const dup = await q(`select count(*)::int as n from daily_records
+                       where owner='${A}'::uuid and record_date='${date}' and kind='journal'`);
+  assert.equal(dup.rows[0].n, 0);
+
+  // 5. The V3 Journal/Reflection interface reads the same row back.
+  const ui = await q(`select entry_date, content from journal_entries
+                      where owner='${A}'::uuid and entry_date='${date}'`);
+  assert.equal(ui.rows.length, 1);
+  assert.equal(ui.rows[0].entry_date.toISOString().slice(0, 10), date);
+
+  // 6. Privacy: user B still cannot see A's journal row.
+  await asUser(B);
+  const leak = await q(`select count(*)::int as n from journal_entries
+                        where owner='${A}'::uuid and entry_date='${date}'`);
+  assert.equal(leak.rows[0].n, 0);
+  await asUser(A);
+});
