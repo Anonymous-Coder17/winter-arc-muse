@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
+import { engine } from "@/lib/sync/engine";
+import { useSyncTick } from "@/components/sync/status";
 import { seedDefaultsIfEmpty } from "@/lib/seed";
 import {
   EmptyState,
@@ -44,6 +46,7 @@ export default function HabitsPage() {
   const [nonce, setNonce] = useState(0);
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  const tick = useSyncTick();
 
   useEffect(() => {
     let cancelled = false;
@@ -51,42 +54,30 @@ export default function HabitsPage() {
       setLoading(true);
       setError(null);
       try {
-        const supabase = createClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          if (!cancelled) setError("Not signed in.");
-          return;
-        }
-        await seedDefaultsIfEmpty(supabase, user.id);
+        await engine.whenReady();
+        const db = getDb();
+        await seedDefaultsIfEmpty();
         const today = todayKey();
         const [h, l, r, lim] = await Promise.all([
-          supabase
-            .from("habits")
-            .select("*")
-            .eq("owner", user.id)
-            .order("sort_order")
-            .order("name"),
-          supabase.from("habit_logs").select("*").eq("log_date", today),
-          supabase
-            .from("abstinence_rules")
-            .select("*")
-            .eq("owner", user.id)
-            .order("name"),
-          supabase
-            .from("usage_limits")
-            .select("*")
-            .eq("owner", user.id)
-            .order("name"),
+          db.list<Habit>("habits", {
+            order: [
+              { col: "sort_order", ascending: true },
+              { col: "name", ascending: true },
+            ],
+          }),
+          db.list<HabitLog>("habit_logs", { eq: { log_date: today } }),
+          db.list<AbstinenceRule>("abstinence_rules", {
+            order: [{ col: "name", ascending: true }],
+          }),
+          db.list<UsageLimit>("usage_limits", {
+            order: [{ col: "name", ascending: true }],
+          }),
         ]);
         if (cancelled) return;
-        const firstErr = [h, l, r, lim].find((x) => x.error)?.error;
-        if (firstErr) throw firstErr;
-        setHabits(h.data ?? []);
-        setLogs(l.data ?? []);
-        setRules(r.data ?? []);
-        setLimits(lim.data ?? []);
+        setHabits(h);
+        setLogs(l);
+        setRules(r);
+        setLimits(lim);
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : "Failed to load.");
@@ -98,7 +89,7 @@ export default function HabitsPage() {
     return () => {
       cancelled = true;
     };
-  }, [nonce]);
+  }, [nonce, tick]);
 
   const logFor = useCallback(
     (habitId: string) => logs.find((x) => x.habit_id === habitId),

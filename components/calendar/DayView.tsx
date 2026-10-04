@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import { toggleHabitDone } from "@/lib/habits";
 import { formatLong, isToday, timeLabel } from "@/lib/dates";
 import { EmptyState, Modal, StateDot } from "@/components/ui";
@@ -41,13 +41,13 @@ export function DayView({
   );
 
   async function onToggleTask(task: Task) {
-    const supabase = createClient();
     const next = task.state === "done" ? "planned" : "done";
-    const { error } = await supabase
-      .from("tasks")
-      .update({ state: next })
-      .eq("id", task.id);
-    if (!error) refresh();
+    try {
+      await getDb().update("tasks", task.id, { state: next });
+      refresh();
+    } catch {
+      /* leave the task as-is; the UI reverts nothing */
+    }
   }
 
   async function onToggleHabit(habitId: string) {

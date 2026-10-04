@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import { Field, Modal } from "@/components/ui";
 import {
   nextSetNumber,
@@ -70,18 +70,18 @@ export function SessionLogger({
     const sessionNotes: string | null = session.notes;
     let cancelled = false;
     async function loadSets() {
-      const supabase = createClient();
-      const { data, error } = await supabase
-        .from("workout_sets")
-        .select("*")
-        .eq("session_id", sessionId)
-        .order("set_number");
-      if (!cancelled && !error) {
-        setLocalSets((data ?? []) as WorkoutSet[]);
+      const rows = await getDb().list<WorkoutSet>("workout_sets", {
+        eq: { session_id: sessionId },
+        order: [{ col: "set_number", ascending: true }],
+      });
+      if (!cancelled) {
+        setLocalSets(rows);
         setNotes(sessionNotes ?? "");
       }
     }
-    loadSets();
+    loadSets().catch(() => {
+      /* not signed in — session has no saved sets yet */
+    });
     return () => {
       cancelled = true;
     };
@@ -94,32 +94,16 @@ export function SessionLogger({
       s.status === "completed"
   );
 
-  async function authed() {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) throw new Error("Not signed in.");
-    return { supabase, user };
-  }
-
   async function startSession() {
     setBusy(true);
     setError(null);
     try {
-      const { supabase, user } = await authed();
-      const { data, error } = await supabase
-        .from("workout_sessions")
-        .insert({
-          owner: user.id,
-          workout_id: workout.id,
-          session_date: dateKey,
-          status: "in_progress",
-        })
-        .select("*")
-        .single();
-      if (error) throw error;
-      setSession(data as WorkoutSession);
+      const data = await getDb().insert("workout_sessions", {
+        workout_id: workout.id,
+        session_date: dateKey,
+        status: "in_progress",
+      });
+      setSession(data as unknown as WorkoutSession);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start session.");
@@ -130,26 +114,20 @@ export function SessionLogger({
 
   /** Persist one set row (insert or update via the unique backstop). */
   async function persistSet(row: WorkoutSet) {
-    const { supabase, user } = await authed();
-    const { data, error } = await supabase
-      .from("workout_sets")
-      .upsert(
-        {
-          owner: user.id,
-          session_id: row.session_id,
-          exercise_id: row.exercise_id,
-          // Guard column: must equal the session's workout (DB-enforced).
-          workout_id: workout.id,
-          set_number: row.set_number,
-          reps: row.reps,
-          duration_seconds: row.duration_seconds,
-        },
-        { onConflict: "session_id,exercise_id,set_number" }
-      )
-      .select("*")
-      .single();
-    if (error) throw error;
-    return data as WorkoutSet;
+    const data = await getDb().upsert(
+      "workout_sets",
+      {
+        session_id: row.session_id,
+        exercise_id: row.exercise_id,
+        // Guard column: must equal the session's workout (DB-enforced).
+        workout_id: workout.id,
+        set_number: row.set_number,
+        reps: row.reps,
+        duration_seconds: row.duration_seconds,
+      },
+      { index: "session_exercise_set", cols: ["session_id", "exercise_id", "set_number"] }
+    );
+    return data as unknown as WorkoutSet;
   }
 
   function updateLocalValue(setId: string, value: number) {
@@ -195,24 +173,17 @@ export function SessionLogger({
     setBusy(true);
     setError(null);
     try {
-      const { supabase, user } = await authed();
       const num = nextSetNumber(localSets, session.id, exercise.id);
-      const { data, error } = await supabase
-        .from("workout_sets")
-        .insert({
-          owner: user.id,
-          session_id: session.id,
-          exercise_id: exercise.id,
-          // Guard column: must equal the session's workout (DB-enforced).
-          workout_id: workout.id,
-          set_number: num,
-          reps: exercise.exercise_type === "reps" ? 0 : null,
-          duration_seconds: exercise.exercise_type === "time" ? 0 : null,
-        })
-        .select("*")
-        .single();
-      if (error) throw error;
-      setLocalSets((prev) => [...prev, data as WorkoutSet]);
+      const data = await getDb().insert("workout_sets", {
+        session_id: session.id,
+        exercise_id: exercise.id,
+        // Guard column: must equal the session's workout (DB-enforced).
+        workout_id: workout.id,
+        set_number: num,
+        reps: exercise.exercise_type === "reps" ? 0 : null,
+        duration_seconds: exercise.exercise_type === "time" ? 0 : null,
+      });
+      setLocalSets((prev) => [...prev, data as unknown as WorkoutSet]);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not add set.");
@@ -224,12 +195,8 @@ export function SessionLogger({
   async function removeSet(row: WorkoutSet) {
     setBusy(true);
     try {
-      const { supabase } = await authed();
-      const { error } = await supabase
-        .from("workout_sets")
-        .delete()
-        .eq("id", row.id);
-      if (error) throw error;
+      const db = getDb();
+      await db.remove("workout_sets", row.id);
       setLocalSets((prev) => prev.filter((s) => s.id !== row.id));
       onSaved();
     } catch (err) {
@@ -241,12 +208,13 @@ export function SessionLogger({
 
   async function saveNotes() {
     if (!session) return;
-    const { supabase } = await authed();
-    const { error } = await supabase
-      .from("workout_sessions")
-      .update({ notes: notes.trim() || null })
-      .eq("id", session.id);
-    if (error) setError(error.message);
+    try {
+      await getDb().update("workout_sessions", session.id, {
+        notes: notes.trim() || null,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save notes.");
+    }
   }
 
   async function finish(status: "completed" | "cancelled") {
@@ -254,20 +222,15 @@ export function SessionLogger({
     setBusy(true);
     setError(null);
     try {
-      const { supabase } = await authed();
       // flush any pending local edits first
       for (const row of localSets) {
         await persistSet(row);
       }
-      const { error } = await supabase
-        .from("workout_sessions")
-        .update({
-          status,
-          completed_at: new Date().toISOString(),
-          notes: notes.trim() || null,
-        })
-        .eq("id", session.id);
-      if (error) throw error;
+      await getDb().update("workout_sessions", session.id, {
+        status,
+        completed_at: new Date().toISOString(),
+        notes: notes.trim() || null,
+      });
       setSession(null);
       onSaved();
       onClose();

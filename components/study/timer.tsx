@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import { Field } from "@/components/ui";
 import { formatDuration, formatHMS, todayKey, utcToDayKey } from "@/lib/dates";
 import { topicsFor } from "./useStudy";
@@ -142,15 +142,10 @@ export function StudyTimer({
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
+      const db = getDb();
       const startedAt = new Date(timer.sessionStart).toISOString();
       const completedAt = new Date().toISOString();
-      const { error } = await supabase.from("study_sessions").insert({
-        owner: user.id,
+      await db.insert("study_sessions", {
         subject_id: timer.subjectId,
         topic_id: timer.topicId,
         session_date: utcToDayKey(startedAt),
@@ -158,7 +153,6 @@ export function StudyTimer({
         completed_at: completedAt,
         duration_seconds: seconds,
       });
-      if (error) throw error;
       persist(null);
       onSaved();
     } catch (err) {
@@ -326,15 +320,10 @@ export function ManualStudyForm({
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
+      const db = getDb();
       const startedAt = new Date(`${date}T12:00:00`);
       const completedAt = new Date(startedAt.getTime() + mins * 60_000);
-      const { error } = await supabase.from("study_sessions").insert({
-        owner: user.id,
+      await db.insert("study_sessions", {
         subject_id: subjectId,
         topic_id: topicId || null,
         session_date: date,
@@ -343,7 +332,6 @@ export function ManualStudyForm({
         duration_seconds: mins * 60,
         notes: notes.trim() || null,
       });
-      if (error) throw error;
       setMinutes("45");
       setNotes("");
       setTopicId("");

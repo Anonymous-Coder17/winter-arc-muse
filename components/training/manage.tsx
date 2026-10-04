@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import { ConfirmInline, Field, Modal, SegControl } from "@/components/ui";
 import { WEEKDAY_LABELS } from "@/lib/training";
 import { exercisesFor } from "./useTraining";
@@ -40,23 +40,16 @@ export function WorkoutForm({
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
+      const db = getDb();
       const payload = {
-        owner: user.id,
         name: name.trim(),
         type,
         description: description.trim() || null,
         video_ref: type === "completion" ? videoRef.trim() || null : null,
         is_active: isActive,
       };
-      const { error } = initial
-        ? await supabase.from("workouts").update(payload).eq("id", initial.id)
-        : await supabase.from("workouts").insert(payload);
-      if (error) throw error;
+      if (initial) await db.update("workouts", initial.id, payload);
+      else await db.insert("workouts", payload);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save workout.");
@@ -153,15 +146,6 @@ export function ExerciseManager({
   const activeList = list.filter((e) => e.is_active);
   const archivedList = list.filter((e) => !e.is_active);
 
-  async function authed() {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) throw new Error("Not signed in.");
-    return { supabase, user };
-  }
-
   async function saveExercise() {
     const target = editing;
     const n = (target ? editing!.name : name).trim();
@@ -172,27 +156,21 @@ export function ExerciseManager({
     setBusy(true);
     setError(null);
     try {
-      const { supabase, user } = await authed();
+      const db = getDb();
       if (target) {
-        const { error } = await supabase
-          .from("workout_exercises")
-          .update({
-            name: n,
-            exercise_type: exType,
-            notes: notes.trim() || null,
-          })
-          .eq("id", target.id);
-        if (error) throw error;
+        await db.update("workout_exercises", target.id, {
+          name: n,
+          exercise_type: exType,
+          notes: notes.trim() || null,
+        });
       } else {
-        const { error } = await supabase.from("workout_exercises").insert({
-          owner: user.id,
+        await db.insert("workout_exercises", {
           workout_id: workout.id,
           name: n,
           exercise_type: exType,
           notes: notes.trim() || null,
           sort_order: list.length + 1,
         });
-        if (error) throw error;
       }
       setName("");
       setNotes("");
@@ -212,12 +190,8 @@ export function ExerciseManager({
     setBusy(true);
     setError(null);
     try {
-      const { supabase } = await authed();
-      const { error } = await supabase
-        .from("workout_exercises")
-        .update({ is_active: false })
-        .eq("id", ex.id);
-      if (error) throw error;
+      const db = getDb();
+      await db.update("workout_exercises", ex.id, { is_active: false });
       setDeleting(null);
       onChanged();
     } catch (err) {
@@ -231,12 +205,8 @@ export function ExerciseManager({
     setBusy(true);
     setError(null);
     try {
-      const { supabase } = await authed();
-      const { error } = await supabase
-        .from("workout_exercises")
-        .update({ is_active: true })
-        .eq("id", ex.id);
-      if (error) throw error;
+      const db = getDb();
+      await db.update("workout_exercises", ex.id, { is_active: true });
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not restore exercise.");
@@ -251,18 +221,14 @@ export function ExerciseManager({
     if (!other) return;
     setBusy(true);
     try {
-      const { supabase } = await authed();
+      const db = getDb();
       // swap sort orders
-      const { error } = await supabase
-        .from("workout_exercises")
-        .update({ sort_order: other.sort_order })
-        .eq("id", ex.id);
-      if (error) throw error;
-      const { error: err2 } = await supabase
-        .from("workout_exercises")
-        .update({ sort_order: ex.sort_order })
-        .eq("id", other.id);
-      if (err2) throw err2;
+      await db.update("workout_exercises", ex.id, {
+        sort_order: other.sort_order,
+      });
+      await db.update("workout_exercises", other.id, {
+        sort_order: ex.sort_order,
+      });
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not reorder.");
@@ -445,16 +411,12 @@ export function ScheduleEditor({
     setBusy(weekday);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
-      const { error } = await supabase.from("training_schedule").upsert(
-        { owner: user.id, weekday, workout_id: workoutId },
-        { onConflict: "owner,weekday" }
+      const db = getDb();
+      await db.upsert(
+        "training_schedule",
+        { weekday, workout_id: workoutId },
+        { index: "weekday", cols: ["weekday"] }
       );
-      if (error) throw error;
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save schedule.");
