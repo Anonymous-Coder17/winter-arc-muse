@@ -47,7 +47,7 @@ before(async () => {
     grant usage on schema public, auth to app_user;
     grant execute on function auth.uid() to app_user;
   `);
-  for (const f of ["0001_v1_schema.sql", "0002_v2_training_study.sql", "0003_v2_1_integrity.sql"]) {
+  for (const f of ["0001_v1_schema.sql", "0002_v2_training_study.sql", "0003_v2_1_integrity.sql", "0004_v2_2_deletion_safety.sql"]) {
     await db.exec(readFileSync(join(ROOT, "supabase", "migrations", f), "utf8"));
   }
   await db.exec(`grant all on all tables in schema public to app_user`);
@@ -263,4 +263,160 @@ test("DB RLS: A can still CRUD own training/study rows", async () => {
   await q(`update workouts set description='hi' where id='${w.id}'`);
   const d = await q(`delete from workouts where id='${w.id}' returning id`);
   assert.equal(d.rows.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// V2.2 — database historical-deletion safety (§8, §9, §10, §11)
+// A direct DELETE of a historical parent must be REJECTED while historical
+// children exist (errcode 23001, like RESTRICT), never silently cascaded.
+// Archiving (UPDATE) is unaffected, and whole-account purge through the
+// auth.users cascade keeps working.
+// ---------------------------------------------------------------------------
+
+const C = "33333333-3333-3333-3333-333333333333";
+
+/** Expect rejection with the RESTRICT-violation SQLSTATE. */
+async function expectRestrict(promise, label) {
+  let err = null;
+  try {
+    await promise;
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, `expected rejection: ${label}`);
+  assert.equal(err.code, "23001", `expected restrict_violation for: ${label}`);
+}
+
+test("DB V2.2: deleting an exercise with sets is rejected; sets survive", async () => {
+  await asUser(A);
+  const w = (await q(`insert into workouts(owner,name) values ('${A}','W-DelEx') returning id`)).rows[0];
+  const e = (await q(`insert into workout_exercises(owner,workout_id,name) values ('${A}','${w.id}','ExDel') returning id`)).rows[0];
+  const s = (await q(`insert into workout_sessions(owner,workout_id,session_date,status) values ('${A}','${w.id}','2026-10-04','completed') returning id`)).rows[0];
+  await q(`insert into workout_sets(owner,session_id,exercise_id,workout_id,set_number,reps) values ('${A}','${s.id}','${e.id}','${w.id}',1,5)`);
+  await expectRestrict(q(`delete from workout_exercises where id='${e.id}'`), "delete exercise with sets");
+  const sets = (await q(`select count(*)::int c from workout_sets where exercise_id='${e.id}'`)).rows[0];
+  assert.equal(sets.c, 1, "historical set survived");
+});
+
+test("DB V2.2: deleting a workout with sessions is rejected; sessions and sets survive", async () => {
+  await asUser(A);
+  const w = (await q(`insert into workouts(owner,name) values ('${A}','W-DelW') returning id`)).rows[0];
+  const e = (await q(`insert into workout_exercises(owner,workout_id,name) values ('${A}','${w.id}','ExDelW') returning id`)).rows[0];
+  const s = (await q(`insert into workout_sessions(owner,workout_id,session_date,status) values ('${A}','${w.id}','2026-10-04','completed') returning id`)).rows[0];
+  await q(`insert into workout_sets(owner,session_id,exercise_id,workout_id,set_number,reps) values ('${A}','${s.id}','${e.id}','${w.id}',1,6)`);
+  await expectRestrict(q(`delete from workouts where id='${w.id}'`), "delete workout with history");
+  const ses = (await q(`select count(*)::int c from workout_sessions where id='${s.id}'`)).rows[0];
+  assert.equal(ses.c, 1, "historical session survived");
+  const sets = (await q(`select count(*)::int c from workout_sets where session_id='${s.id}'`)).rows[0];
+  assert.equal(sets.c, 1, "historical set survived");
+});
+
+test("DB V2.2: deleting a topic with sessions is rejected; session survives", async () => {
+  await asUser(A);
+  const sub = (await q(`insert into subjects(owner,name) values ('${A}','SubDelT') returning id`)).rows[0];
+  const top = (await q(`insert into topics(owner,subject_id,name) values ('${A}','${sub.id}','TopDel') returning id`)).rows[0];
+  const ses = (await q(
+    `insert into study_sessions(owner,subject_id,topic_id,session_date,started_at,duration_seconds)
+     values ('${A}','${sub.id}','${top.id}','2026-10-04',now(),1200) returning id`
+  )).rows[0];
+  await expectRestrict(q(`delete from topics where id='${top.id}'`), "delete topic with sessions");
+  const kept = (await q(
+    `select t.name as topic from study_sessions ss join topics t on t.id = ss.topic_id where ss.id='${ses.id}'`
+  )).rows[0];
+  assert.equal(kept.topic, "TopDel", "session keeps its topic identity");
+});
+
+test("DB V2.2: deleting a subject with sessions is rejected; topic and session survive", async () => {
+  await asUser(A);
+  const sub = (await q(`insert into subjects(owner,name) values ('${A}','SubDelS') returning id`)).rows[0];
+  const top = (await q(`insert into topics(owner,subject_id,name) values ('${A}','${sub.id}','TopDelS') returning id`)).rows[0];
+  const ses = (await q(
+    `insert into study_sessions(owner,subject_id,topic_id,session_date,started_at,duration_seconds)
+     values ('${A}','${sub.id}','${top.id}','2026-10-04',now(),1500) returning id`
+  )).rows[0];
+  await expectRestrict(q(`delete from subjects where id='${sub.id}'`), "delete subject with history");
+  const t = (await q(`select count(*)::int c from topics where id='${top.id}'`)).rows[0];
+  assert.equal(t.c, 1, "topic survived");
+  const kept = (await q(`select count(*)::int c from study_sessions where id='${ses.id}'`)).rows[0];
+  assert.equal(kept.c, 1, "study session survived");
+});
+
+test("DB V2.2: deleting a childless parent still succeeds (no over-blocking)", async () => {
+  await asUser(A);
+  const w = (await q(`insert into workouts(owner,name) values ('${A}','W-Empty') returning id`)).rows[0];
+  const e = (await q(`insert into workout_exercises(owner,workout_id,name) values ('${A}','${w.id}','ExEmpty') returning id`)).rows[0];
+  const sub = (await q(`insert into subjects(owner,name) values ('${A}','SubEmpty') returning id`)).rows[0];
+  const top = (await q(`insert into topics(owner,subject_id,name) values ('${A}','${sub.id}','TopEmpty') returning id`)).rows[0];
+  // exercise with no sets: deletable
+  const d1 = await q(`delete from workout_exercises where id='${e.id}' returning id`);
+  assert.equal(d1.rows.length, 1);
+  // workout now childless: deletable
+  const d2 = await q(`delete from workouts where id='${w.id}' returning id`);
+  assert.equal(d2.rows.length, 1);
+  // topic with no sessions: deletable
+  const d3 = await q(`delete from topics where id='${top.id}' returning id`);
+  assert.equal(d3.rows.length, 1);
+  // subject now childless: deletable
+  const d4 = await q(`delete from subjects where id='${sub.id}' returning id`);
+  assert.equal(d4.rows.length, 1);
+});
+
+test("DB V2.2: archived parents with history still cannot be deleted", async () => {
+  await asUser(A);
+  const w = (await q(`insert into workouts(owner,name) values ('${A}','W-ArchDel') returning id`)).rows[0];
+  const e = (await q(`insert into workout_exercises(owner,workout_id,name) values ('${A}','${w.id}','ExArchDel') returning id`)).rows[0];
+  const s = (await q(`insert into workout_sessions(owner,workout_id,session_date,status) values ('${A}','${w.id}','2026-10-03','completed') returning id`)).rows[0];
+  await q(`insert into workout_sets(owner,session_id,exercise_id,workout_id,set_number,reps) values ('${A}','${s.id}','${e.id}','${w.id}',1,4)`);
+  await q(`update workouts set is_active=false where id='${w.id}'`);
+  await q(`update workout_exercises set is_active=false where id='${e.id}'`);
+  // archiving does not open a back door: direct delete is still rejected
+  await expectRestrict(q(`delete from workout_exercises where id='${e.id}'`), "delete archived exercise with sets");
+  await expectRestrict(q(`delete from workouts where id='${w.id}'`), "delete archived workout with sessions");
+});
+
+test("DB V2.2 §9: archive workflows keep history queryable after the guard exists", async () => {
+  await asUser(A);
+  const sub = (await q(`insert into subjects(owner,name) values ('${A}','SubArch9') returning id`)).rows[0];
+  const top = (await q(`insert into topics(owner,subject_id,name) values ('${A}','${sub.id}','TopArch9') returning id`)).rows[0];
+  const ses = (await q(
+    `insert into study_sessions(owner,subject_id,topic_id,session_date,started_at,duration_seconds)
+     values ('${A}','${sub.id}','${top.id}','2026-10-02',now(),2400) returning id`
+  )).rows[0];
+  await q(`update subjects set is_active=false where id='${sub.id}'`);
+  await q(`update topics set is_active=false where id='${top.id}'`);
+  const rows = (await q(
+    `select s.name as subject, t.name as topic, ss.duration_seconds
+     from study_sessions ss
+     join subjects s on s.id = ss.subject_id
+     left join topics t on t.id = ss.topic_id
+     where ss.id='${ses.id}'`
+  )).rows;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].subject, "SubArch9");
+  assert.equal(rows[0].topic, "TopArch9");
+});
+
+test("DB V2.2 §11: deleting the auth.users row purges the whole dataset (account cleanup intact)", async () => {
+  // Build a full dataset for user C as the superuser-equivalent (RLS bypass).
+  await db.exec(`set session authorization postgres`);
+  await q(`insert into auth.users(id) values ('${C}'::uuid)`);
+  const w = (await q(`insert into workouts(owner,name) values ('${C}','C-Workout') returning id`)).rows[0];
+  const e = (await q(`insert into workout_exercises(owner,workout_id,name) values ('${C}','${w.id}','C-Ex') returning id`)).rows[0];
+  const s = (await q(`insert into workout_sessions(owner,workout_id,session_date) values ('${C}','${w.id}','2026-10-04') returning id`)).rows[0];
+  await q(`insert into workout_sets(owner,session_id,exercise_id,workout_id,set_number,reps) values ('${C}','${s.id}','${e.id}','${w.id}',1,7)`);
+  await q(`insert into training_schedule(owner,weekday,workout_id) values ('${C}',1,'${w.id}')`);
+  const sub = (await q(`insert into subjects(owner,name) values ('${C}','C-Subject') returning id`)).rows[0];
+  const top = (await q(`insert into topics(owner,subject_id,name) values ('${C}','${sub.id}','C-Topic') returning id`)).rows[0];
+  await q(`insert into study_sessions(owner,subject_id,topic_id,session_date,started_at,duration_seconds) values ('${C}','${sub.id}','${top.id}','2026-10-04',now(),900)`);
+  // The supported account-deletion mechanism: remove the auth user; the
+  // owner -> auth.users ON DELETE CASCADE hierarchy removes everything.
+  // The V2.2 guard must NOT block this (it only blocks direct deletes
+  // while the owner row still exists).
+  await q(`delete from auth.users where id='${C}'`);
+  for (const tbl of ["workouts", "workout_exercises", "workout_sessions", "workout_sets", "training_schedule", "subjects", "topics", "study_sessions"]) {
+    const r = await q(`select count(*)::int c from ${tbl} where owner='${C}'`);
+    assert.equal(r.rows[0].c, 0, `purge left rows in ${tbl}`);
+  }
+  await db.exec(`set session authorization app_user`);
+  await asUser(A);
 });
