@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { todayKey } from "./dates";
 
 // Default seed rows for a brand-new user. Called once, lazily, when the user
 // has no habits/rules/limits yet. NEVER includes the five daily prayers.
@@ -7,6 +8,7 @@ export async function seedDefaultsIfEmpty(
   supabase: SupabaseClient,
   owner: string
 ): Promise<void> {
+  const today = todayKey(); // local date — never UTC-sliced
   const { count: habitCount } = await supabase
     .from("habits")
     .select("id", { count: "exact", head: true })
@@ -41,10 +43,10 @@ export async function seedDefaultsIfEmpty(
 
   if (ruleCount === 0) {
     await supabase.from("abstinence_rules").insert([
-      { owner, name: "Porn", start_date: new Date().toISOString().slice(0, 10) },
-      { owner, name: "Instagram", start_date: new Date().toISOString().slice(0, 10) },
-      { owner, name: "Telegram", start_date: new Date().toISOString().slice(0, 10) },
-      { owner, name: "Games", start_date: new Date().toISOString().slice(0, 10) },
+      { owner, name: "Porn", start_date: today },
+      { owner, name: "Instagram", start_date: today },
+      { owner, name: "Telegram", start_date: today },
+      { owner, name: "Games", start_date: today },
     ]);
   }
 

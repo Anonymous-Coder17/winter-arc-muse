@@ -18,14 +18,17 @@ import type { Task, UsageLimit } from "@/lib/types";
 function QuickButton({
   label,
   onClick,
+  disabled,
 }: {
   label: string;
   onClick: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className="surface-elevated rounded-2xl px-3 py-3.5 text-sm font-medium t-primary text-center transition-colors hover:border-[#7C8CF8]/60 active:scale-[0.98] touch-manipulation min-h-[56px]"
+      disabled={disabled}
+      className="surface-elevated rounded-2xl px-3 py-3.5 text-sm font-medium t-primary text-center transition-colors hover:border-[#7C8CF8]/60 active:scale-[0.98] touch-manipulation min-h-[56px] disabled:opacity-50"
     >
       {label}
     </button>
@@ -114,6 +117,7 @@ export function TodayPanel({
         <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
           <QuickButton
             label={meditationDone ? "✓ Meditation" : "Meditation"}
+            disabled={busy}
             onClick={() =>
               meditation &&
               run(
@@ -130,12 +134,14 @@ export function TodayPanel({
           />
           <QuickButton
             label="Start study"
+            disabled={busy}
             onClick={() =>
               run(() => startSession("study_session", dateKey), "Study session started.")
             }
           />
           <QuickButton
             label="Start workout"
+            disabled={busy}
             onClick={() =>
               run(() => startSession("workout_session", dateKey), "Workout started.")
             }
@@ -150,6 +156,7 @@ export function TodayPanel({
                 <button
                   key={v}
                   className="seg-btn !min-h-[36px] !px-2.5"
+                  disabled={busy}
                   onClick={() =>
                     run(
                       () => quickLogCount("Hifz", dateKey, v),
@@ -171,6 +178,7 @@ export function TodayPanel({
                 <button
                   key={v}
                   className="seg-btn !min-h-[36px] !px-2.5"
+                  disabled={busy}
                   onClick={() =>
                     run(
                       () => quickLogCount("Reading", dateKey, v),
@@ -213,7 +221,8 @@ export function TodayPanel({
             <p className="text-sm t-secondary">
               No workout planned today.{" "}
               <button
-                className="text-[#5A6AE0] dark:text-[#AAB6FF] font-medium"
+                className="text-[#5A6AE0] dark:text-[#AAB6FF] font-medium disabled:opacity-50"
+                disabled={busy}
                 onClick={() =>
                   run(
                     () => startSession("workout_session", dateKey),
@@ -256,7 +265,8 @@ export function TodayPanel({
             <p className="text-sm t-secondary">
               No study blocks planned today.{" "}
               <button
-                className="text-[#5A6AE0] dark:text-[#AAB6FF] font-medium"
+                className="text-[#5A6AE0] dark:text-[#AAB6FF] font-medium disabled:opacity-50"
+                disabled={busy}
                 onClick={() =>
                   run(
                     () => startSession("study_session", dateKey),

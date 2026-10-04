@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { Field } from "@/components/ui";
+import { todayKey } from "@/lib/dates";
 import type { AbstinenceRule, UsageLimit } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -21,7 +22,7 @@ export function AbstinenceRuleForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [startDate, setStartDate] = useState(
-    initial?.start_date ?? new Date().toISOString().slice(0, 10)
+    initial?.start_date ?? todayKey()
   );
   const [isActive, setIsActive] = useState(initial?.is_active ?? true);
   const [error, setError] = useState<string | null>(null);

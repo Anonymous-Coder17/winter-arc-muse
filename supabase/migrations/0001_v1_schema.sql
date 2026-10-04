@@ -372,6 +372,19 @@ create index if not exists daily_records_owner_date_idx
   on public.daily_records (owner, record_date, created_at);
 
 -- ---------------------------------------------------------------------------
+-- uniqueness guards (safe to re-run)
+-- Lazy seeding (lib/seed.ts) and quick-create paths (quickLogCount) run a
+-- check-then-insert; without these, a two-tab/double-submit race could
+-- duplicate default rows. Names are unique per owner, case-insensitively.
+-- ---------------------------------------------------------------------------
+create unique index if not exists habits_owner_name_uidx
+  on public.habits (owner, lower(name));
+create unique index if not exists abstinence_rules_owner_name_uidx
+  on public.abstinence_rules (owner, lower(name));
+create unique index if not exists usage_limits_owner_name_uidx
+  on public.usage_limits (owner, lower(name));
+
+-- ---------------------------------------------------------------------------
 -- seed defaults (application-layer convenience; safe to re-run)
 -- Inserts the V1 default seed rows for a user id passed by the app.
 -- The app calls this via RPC-like inserts only when the user has no data.

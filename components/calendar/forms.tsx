@@ -18,16 +18,20 @@ export function TaskForm({
   dateKey,
   initial,
   presetKind,
+  showDateField,
   onSaved,
   onDeleted,
 }: {
   dateKey: string;
   initial?: Task;
   presetKind?: TaskKind;
+  /** when true, the user can pick the task's date (default: locked to dateKey) */
+  showDateField?: boolean;
   onSaved: () => void;
   onDeleted?: () => void;
 }) {
   const [title, setTitle] = useState(initial?.title ?? "");
+  const [taskDate, setTaskDate] = useState(initial?.task_date ?? dateKey);
   const [start, setStart] = useState(initial?.start_time ?? "");
   const [end, setEnd] = useState(initial?.end_time ?? "");
   const [kind, setKind] = useState<TaskKind>(initial?.kind ?? presetKind ?? "general");
@@ -50,7 +54,7 @@ export function TaskForm({
       const row = {
         owner: user.id,
         title: title.trim(),
-        task_date: dateKey,
+        task_date: showDateField ? taskDate : dateKey,
         start_time: start || null,
         end_time: end || null,
         kind,
@@ -99,6 +103,17 @@ export function TaskForm({
           autoFocus
         />
       </Field>
+      {showDateField && (
+        <Field label="Date">
+          <input
+            className="input"
+            type="date"
+            value={taskDate}
+            onChange={(e) => setTaskDate(e.target.value)}
+            required
+          />
+        </Field>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <Field label="Start time (optional)">
           <input

@@ -12,6 +12,15 @@ export function todayKey(): string {
   return toDayKey(new Date());
 }
 
+/**
+ * Convert an ISO/timestamptz string (always UTC on the wire) to the user's
+ * LOCAL day key. Use for attributing timestamped rows (incidents, sessions)
+ * to calendar days — never slice(0,10) a UTC string against a local key.
+ */
+export function utcToDayKey(iso: string): string {
+  return toDayKey(new Date(iso));
+}
+
 export function addDays(key: string, n: number): string {
   const d = new Date(key + "T00:00:00");
   d.setDate(d.getDate() + n);

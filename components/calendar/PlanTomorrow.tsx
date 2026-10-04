@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { addDays, formatLong } from "@/lib/dates";
 import { Field, Modal } from "@/components/ui";
 import { TaskForm } from "./forms";
 import type { CalendarData } from "./useCalendarData";
+import type { Habit } from "@/lib/types";
 
 /** Prominent next-day planning: review what's already planned for tomorrow,
  *  quickly add tasks, and make sure tomorrow's habits are active. */
@@ -18,10 +19,39 @@ export function PlanTomorrow({
   onClose: () => void;
 }) {
   const tomorrow = addDays(todayKey, 1);
-  const { tasks, events, habits, habitLogs, refresh } = data;
+  const { tasks, events, refresh } = data;
   const [addingTask, setAddingTask] = useState(false);
   const [note, setNote] = useState("");
   const [saved, setSaved] = useState(false);
+  const [allHabits, setAllHabits] = useState<Habit[]>([]);
+  const [habitBusy, setHabitBusy] = useState(false);
+  const [noteBusy, setNoteBusy] = useState(false);
+  const [noteError, setNoteError] = useState<string | null>(null);
+
+  // data.habits only carries active habits; planning needs the full list so
+  // paused habits can be reactivated for tomorrow.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadHabits() {
+      const { createClient } = await import("@/lib/supabase/client");
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data: rows } = await supabase
+        .from("habits")
+        .select("*")
+        .eq("owner", user.id)
+        .order("sort_order")
+        .order("name");
+      if (!cancelled && rows) setAllHabits(rows);
+    }
+    loadHabits();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const tTasks = useMemo(
     () => tasks.filter((t) => t.task_date === tomorrow),
@@ -33,33 +63,57 @@ export function PlanTomorrow({
   );
 
   async function toggleHabitActive(habitId: string, isActive: boolean) {
-    const { createClient } = await import("@/lib/supabase/client");
-    const supabase = createClient();
-    await supabase
-      .from("habits")
-      .update({ is_active: !isActive })
-      .eq("id", habitId);
-    refresh();
+    if (habitBusy) return;
+    setHabitBusy(true);
+    try {
+      const { createClient } = await import("@/lib/supabase/client");
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("habits")
+        .update({ is_active: !isActive })
+        .eq("id", habitId);
+      if (error) throw error;
+      setAllHabits((prev) =>
+        prev.map((h) =>
+          h.id === habitId ? { ...h, is_active: !isActive } : h
+        )
+      );
+      refresh();
+    } catch {
+      // Silent here would strand the toggle; refresh to show true state.
+      refresh();
+    } finally {
+      setHabitBusy(false);
+    }
   }
 
   async function saveNote() {
-    if (!note.trim()) return;
-    const { createClient } = await import("@/lib/supabase/client");
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase.from("daily_records").insert({
-      owner: user.id,
-      record_date: tomorrow,
-      kind: "note",
-      title: "Plan note",
-      body: note.trim(),
-    });
-    setSaved(true);
-    setNote("");
-    refresh();
+    if (!note.trim() || noteBusy) return;
+    setNoteBusy(true);
+    setNoteError(null);
+    try {
+      const { createClient } = await import("@/lib/supabase/client");
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) throw new Error("Not signed in.");
+      const { error } = await supabase.from("daily_records").insert({
+        owner: user.id,
+        record_date: tomorrow,
+        kind: "note",
+        title: "Plan note",
+        body: note.trim(),
+      });
+      if (error) throw error;
+      setSaved(true);
+      setNote("");
+      refresh();
+    } catch (err) {
+      setNoteError(err instanceof Error ? err.message : "Could not save note.");
+    } finally {
+      setNoteBusy(false);
+    }
   }
 
   return (
@@ -126,22 +180,29 @@ export function PlanTomorrow({
             Only active habits appear on the day view. Toggle what applies
             tomorrow.
           </p>
-          <div className="flex flex-col gap-1">
-            {habits.map((h) => (
-              <div
-                key={h.id}
-                className="flex items-center justify-between gap-3 rounded-xl px-3 py-2 hover:bg-black/5 dark:hover:bg-white/5"
-              >
-                <span className="text-sm t-primary">{h.name}</span>
-                <button
-                  className={`seg-btn !min-h-[36px] ${h.is_active ? "seg-btn-active" : ""}`}
-                  onClick={() => toggleHabitActive(h.id, h.is_active)}
+          {allHabits.length === 0 ? (
+            <p className="text-sm t-secondary">
+              No habits yet — create them on the Habits page.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {allHabits.map((h) => (
+                <div
+                  key={h.id}
+                  className="flex items-center justify-between gap-3 rounded-xl px-3 py-2 hover:bg-black/5 dark:hover:bg-white/5"
                 >
-                  {h.is_active ? "Active" : "Paused"}
-                </button>
-              </div>
-            ))}
-          </div>
+                  <span className="text-sm t-primary">{h.name}</span>
+                  <button
+                    className={`seg-btn !min-h-[36px] ${h.is_active ? "seg-btn-active" : ""}`}
+                    disabled={habitBusy}
+                    onClick={() => toggleHabitActive(h.id, h.is_active)}
+                  >
+                    {h.is_active ? "Active" : "Paused"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section>
@@ -155,11 +216,16 @@ export function PlanTomorrow({
           </Field>
           <button
             className="btn-secondary mt-2"
-            disabled={!note.trim()}
+            disabled={!note.trim() || noteBusy}
             onClick={saveNote}
           >
-            Save note
+            {noteBusy ? "Saving…" : "Save note"}
           </button>
+          {noteError && (
+            <p className="text-sm text-red-500 dark:text-red-400 mt-2" role="alert">
+              {noteError}
+            </p>
+          )}
           {saved && (
             <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-2">
               Saved — it will be waiting on tomorrow&apos;s day view.

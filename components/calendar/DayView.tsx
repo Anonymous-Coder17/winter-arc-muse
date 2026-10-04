@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { toggleHabitDone } from "@/lib/habits";
 import { formatLong, isToday, timeLabel } from "@/lib/dates";
@@ -183,6 +184,11 @@ export function DayView({
           <EmptyState
             title="No habits yet"
             body="Create your first habit to start logging daily."
+            action={
+              <Link href="/habits" className="btn-primary">
+                Go to Habits
+              </Link>
+            }
           />
         ) : (
           <div className="surface card-pad flex flex-col gap-1">
