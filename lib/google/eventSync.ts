@@ -84,7 +84,14 @@ export interface GoogleSyncResult {
 export interface RunGoogleSyncArgs {
   supabase: SupabaseClient;
   userId: string;
-  /** IANA time zone used to interpret Google events as wall-clock time. */
+  /**
+   * Display IANA zone for this sync call (the device's zone): timed Google
+   * events are rendered as local wall-clock in this zone, and it is stored
+   * on the mapping as `local_timezone`. Timed pushes interpret the local
+   * wall-clock in each mapping's stored `local_timezone` (V4.3.2.2) —
+   * never blindly in this zone — falling back to it only for legacy
+   * mappings and genuine time edits made in this zone.
+   */
   timeZone: string;
   fetchImpl?: typeof fetch;
 }
@@ -117,6 +124,17 @@ interface EventMappingRow {
   google_timezone: string | null;
   /** Google's end timezone, only when it differs from the start zone. */
   google_end_timezone: string | null;
+  /**
+   * IANA zone in which the local wall-clock representation (event_date /
+   * start_time / end_time) was interpreted when it was created — the display
+   * zone of the importing device (V4.3.2.2). The push path interprets the
+   * local wall-clock in THIS zone, never blindly in the current device
+   * zone, so a title-only edit from another timezone cannot move the
+   * event. NULL for rows written before V4.3.2.2 (legacy fallback: the
+   * current sync-call zone). Never the Google event's own timezone — see
+   * google_timezone.
+   */
+  local_timezone: string | null;
   /** All-day date range (end exclusive); NULL for timed events. */
   google_start_date: string | null;
   google_end_date: string | null;
@@ -369,12 +387,15 @@ async function updateMappingGoogleRef(
   googleEventId: string,
   etag: string | null,
   now: string,
-  meta?: Pick<
-    EventMappingRow,
-    | "google_timezone"
-    | "google_end_timezone"
-    | "google_start_date"
-    | "google_end_date"
+  meta?: Partial<
+    Pick<
+      EventMappingRow,
+      | "google_timezone"
+      | "google_end_timezone"
+      | "google_start_date"
+      | "google_end_date"
+      | "local_timezone"
+    >
   >
 ): Promise<void> {
   // Identified by (owner, local_event_id) — unique and never null here, so
@@ -400,7 +421,9 @@ async function updateMappingGoogleRef(
  * `calendarTimeZone` is the Google calendar's own zone, used only as a
  * fallback when the event carries no timezone of its own. The event's
  * Google timezone semantics are stored on the mapping — never conflated
- * with the display zone.
+ * with the display zone — and since V4.3.2.2 the display zone itself is
+ * stored as the mapping's `local_timezone` so pushes interpret the
+ * wall-clock in the zone it was rendered in.
  */
 async function applyGoogleItem(
   supabase: SupabaseClient,
@@ -473,6 +496,10 @@ async function applyGoogleItem(
         google_etag: item.etag ?? null,
         origin: "google",
         ...meta,
+        // The local wall-clock was just rendered in `timeZone` (the display
+        // zone of this sync call) — record it so a later push from a device
+        // in another zone interprets the wall-clock correctly (V4.3.2.2).
+        local_timezone: timeZone,
         recurrence: item.recurrence?.[0] ?? null,
         last_synced_at: now,
       });
@@ -515,7 +542,14 @@ async function applyGoogleItem(
   await updateLocalFromDraft(supabase, userId, local.id, draft);
   await supabase
     .from("google_event_mappings")
-    .update({ google_etag: item.etag ?? null, last_synced_at: now, ...meta })
+    .update({
+      google_etag: item.etag ?? null,
+      last_synced_at: now,
+      ...meta,
+      // The local row was just re-rendered in `timeZone` — keep the
+      // interpretation zone in step (V4.3.2.2).
+      local_timezone: timeZone,
+    })
     .eq("owner", userId)
     .eq("local_event_id", mapping.local_event_id);
   if (locallyModified) {
@@ -532,6 +566,10 @@ async function applyGoogleItem(
  * Google -> app for one calendar: load the sync token, fetch (incremental
  * or full), apply every item, persist the new token. A 401 marks the
  * connection revoked and aborts the whole sync with RevokedError.
+ *
+ * Returns the fetched Google items so the push phase can compare a dirty
+ * local row against the last Google rendering (V4.3.2.2 genuine-edit
+ * detection).
  */
 async function syncCalendarFromGoogle(
   supabase: SupabaseClient,
@@ -544,7 +582,7 @@ async function syncCalendarFromGoogle(
   calendarId: string,
   now: string,
   result: GoogleSyncResult
-): Promise<void> {
+): Promise<GoogleApiEvent[]> {
   try {
     const { data: stateRow } = await supabase
       .from("google_calendar_sync_state")
@@ -600,6 +638,7 @@ async function syncCalendarFromGoogle(
     await supabase
       .from("google_calendar_sync_state")
       .upsert(upsertRow, { onConflict: "owner,google_calendar_id" });
+    return fetched.items;
   } catch (err) {
     if (err instanceof GoogleAuthError) {
       await markConnectionRevoked(supabase, conn, userId);
@@ -610,15 +649,78 @@ async function syncCalendarFromGoogle(
 }
 
 /**
+ * Decide which IANA zone the local wall-clock is interpreted in for this
+ * push (V4.3.2.2).
+ *
+ * Policy:
+ * - The mapping's stored `local_timezone` is the zone in which the local
+ *   wall-clock representation was created (import or last Google-driven
+ *   rewrite). A title-only / metadata-only edit leaves the wall-clock
+ *   identical to the last Google rendering, so it is interpreted in the
+ *   stored zone — the event's instant cannot move just because the syncing
+ *   device is in a different zone.
+ * - A genuine time edit (the wall-clock differs from the last Google
+ *   rendering in the stored zone) is interpreted in the CURRENT display
+ *   zone — the zone where the user made the edit — and the stored zone is
+ *   updated to match, so the next round-trip stays stable. Same-zone edits
+ *   behave exactly as before; the instant shifts by the wall-clock delta.
+ * - Legacy mappings without a stored zone fall back to the current sync
+ *   zone (the pre-V4.3.2.2 behavior) — documented, deterministic, and never
+ *   silently inventing a zone that cannot be recovered. The fallback zone is
+ *   NOT persisted for legacy rows: it is only ever written when the mapping
+ *   already carries a stored zone (i.e. the wall-clock was provably rendered
+ *   in that zone), or when the row is re-rendered from Google.
+ * - All-day events carry no timezone interpretation at all.
+ *
+ * The comparison needs the Google item from this sync's pull phase; when it
+ * is unavailable (e.g. incremental sync returned nothing for the event) the
+ * stored zone is used unconditionally — the safe direction for title-only
+ * edits, since it can never move the event.
+ */
+function resolvePushZone(
+  mapping: EventMappingRow,
+  local: CalendarEventRow,
+  timeZone: string,
+  pulled: GoogleApiEvent | undefined
+): { zone: string; zoneChanged: boolean } {
+  const stored = mapping.local_timezone ?? timeZone;
+  if (
+    local.is_all_day ||
+    !pulled?.start?.dateTime ||
+    pulled.etag == null ||
+    pulled.etag !== mapping.google_etag
+  ) {
+    return { zone: stored, zoneChanged: false };
+  }
+  // Re-render what the local row should contain if the user did not touch
+  // the time (same converter as import, including end-clamping).
+  const expected = googleEventToLocal(pulled, stored);
+  const timeChanged =
+    local.event_date !== expected.event_date ||
+    local.start_time !== expected.start_time ||
+    local.end_time !== expected.end_time;
+  if (!timeChanged) return { zone: stored, zoneChanged: false };
+  // Genuine edit — but only persist the new zone when the mapping already
+  // had a stored one; for legacy rows the zone cannot be recovered, so the
+  // fallback stays transient (see policy above).
+  return {
+    zone: timeZone,
+    zoneChanged: mapping.local_timezone != null && stored !== timeZone,
+  };
+}
+
+/**
  * App -> Google push phase. Only runs when the connection granted the
  * calendar.events scope. Per-mapping errors are recorded as conflicts so one
  * bad mapping never aborts the rest.
  *
- * Pushes reconstruct Google events from the local wall-clock (interpreted in
- * the sync's display `timeZone`) using each mapping's preserved Google
- * timezone semantics — a title-only edit round-trips to the identical
- * Google event; a genuine local time edit moves the event while keeping its
- * Google zone. All-day locals push as start.date/end.date.
+ * Pushes reconstruct Google events from the local wall-clock, interpreted in
+ * each mapping's stored `local_timezone` (V4.3.2.2) — never blindly in the
+ * current device zone — and re-expressed in the preserved Google timezone
+ * semantics. A title-only edit round-trips to the identical Google event
+ * even from a device in another timezone; a genuine local time edit moves
+ * the event while keeping its Google zone. All-day locals push as
+ * start.date/end.date.
  */
 async function pushLocalChanges(
   supabase: SupabaseClient,
@@ -628,7 +730,9 @@ async function pushLocalChanges(
   fetchImpl: FetchImpl,
   accessToken: string,
   now: string,
-  result: GoogleSyncResult
+  result: GoogleSyncResult,
+  /** Google items seen in this sync's pull phase, keyed `${calendarId}\n${googleEventId}`. */
+  pulledItems: Map<string, GoogleApiEvent>
 ): Promise<void> {
   const { data: mappingRows } = await supabase
     .from("google_event_mappings")
@@ -666,12 +770,16 @@ async function pushLocalChanges(
       }
       const opts = pushOptsFor(mapping, local, timeZone);
       if (!mapping.google_event_id) {
-        // New local event linked for sync: create it on Google.
+        // New local event linked for sync: create it on Google. The local
+        // wall-clock was authored in the stored zone when known, else the
+        // current zone (V4.3.2.2) — and the zone is persisted so later
+        // pushes stay stable.
+        const interpretZone = mapping.local_timezone ?? timeZone;
         const created = await createEvent(
           fetchImpl,
           accessToken,
           mapping.google_calendar_id,
-          localEventToGoogle(local, timeZone, opts)
+          localEventToGoogle(local, interpretZone, opts)
         );
         await updateMappingGoogleRef(
           supabase,
@@ -679,19 +787,37 @@ async function pushLocalChanges(
           mapping,
           created.id,
           created.etag,
-          now
+          now,
+          { local_timezone: interpretZone }
         );
         result.pushed++;
         continue;
       }
       if (local.updated_at > (mapping.last_synced_at ?? EPOCH_ISO)) {
         try {
+          const pulled = pulledItems.get(
+            `${mapping.google_calendar_id}\n${mapping.google_event_id}`
+          );
+          const { zone: pushZone, zoneChanged } = resolvePushZone(
+            mapping,
+            local,
+            timeZone,
+            pulled
+          );
+          if (zoneChanged) {
+            await supabase
+              .from("google_event_mappings")
+              .update({ local_timezone: timeZone })
+              .eq("owner", userId)
+              .eq("local_event_id", localEventId);
+            mapping.local_timezone = timeZone;
+          }
           const saved = await updateEvent(
             fetchImpl,
             accessToken,
             mapping.google_calendar_id,
             mapping.google_event_id,
-            localEventToGoogle(local, timeZone, opts),
+            localEventToGoogle(local, pushZone, opts),
             mapping.google_etag
           );
           await updateMappingGoogleRef(
@@ -721,10 +847,14 @@ async function pushLocalChanges(
               mapping.google_event_id,
               latest.etag ?? null,
               now,
-              googleMetaForItem(
-                latest,
-                calendarTimeZones.get(mapping.google_calendar_id) ?? null
-              )
+              {
+                ...googleMetaForItem(
+                  latest,
+                  calendarTimeZones.get(mapping.google_calendar_id) ?? null
+                ),
+                // The local row was just re-rendered in `timeZone` (V4.3.2.2).
+                local_timezone: timeZone,
+              }
             );
             result.updated++;
             result.conflicts.push({
@@ -851,10 +981,12 @@ export async function runGoogleSync(
   );
 
   // (e/f) Google -> app, per calendar. One failing calendar is recorded and
-  // the rest still sync.
+  // the rest still sync. Pulled items are collected so the push phase can
+  // tell a title-only edit from a genuine time edit (V4.3.2.2).
+  const pulledItems = new Map<string, GoogleApiEvent>();
   for (const calendarId of calendarIds) {
     try {
-      await syncCalendarFromGoogle(
+      const items = await syncCalendarFromGoogle(
         supabase,
         userId,
         conn,
@@ -866,6 +998,9 @@ export async function runGoogleSync(
         now,
         result
       );
+      for (const item of items) {
+        if (item.id) pulledItems.set(`${calendarId}\n${item.id}`, item);
+      }
       result.calendars.push({ calendarId, ok: true });
     } catch (err) {
       if (err instanceof RevokedError) throw err;
@@ -888,7 +1023,8 @@ export async function runGoogleSync(
         fetchImpl,
         accessToken,
         now,
-        result
+        result,
+        pulledItems
       );
     } catch (err) {
       if (err instanceof GoogleAuthError) {

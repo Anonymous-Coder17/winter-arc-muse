@@ -6,7 +6,9 @@ export const runtime = "nodejs";
 
 // POST /api/google/mappings — link a local calendar event to one of the
 // user's selected Google calendars so future syncs push it to Google.
-// Body: { localEventId: string, googleCalendarId: string }.
+// Body: { localEventId: string, googleCalendarId: string, timeZone?: string }.
+// The optional timeZone is the client's display zone, stored as the
+// mapping's local_timezone (V4.3.2.2).
 //
 // The event must belong to the session user and the calendar must be one of
 // their SELECTED calendars. Creates a mapping row with origin "synced"; if a
@@ -30,6 +32,7 @@ export async function POST(request: Request) {
   const localEventId = (body as { localEventId?: unknown } | null)?.localEventId;
   const googleCalendarId = (body as { googleCalendarId?: unknown } | null)
     ?.googleCalendarId;
+  const timeZoneRaw = (body as { timeZone?: unknown } | null)?.timeZone;
   if (
     typeof localEventId !== "string" ||
     localEventId.length === 0 ||
@@ -40,6 +43,19 @@ export async function POST(request: Request) {
       { error: "localEventId and googleCalendarId are required." },
       { status: 400 }
     );
+  }
+  // Optional display zone the client used for the local wall-clock. Stored
+  // as the mapping's local_timezone (V4.3.2.2) so the sync push interprets
+  // the wall-clock in the zone it was authored in. Absent/invalid -> NULL
+  // (the push falls back to the sync-call zone, the legacy behavior).
+  let localTimezone: string | null = null;
+  if (typeof timeZoneRaw === "string" && timeZoneRaw.length > 0) {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: timeZoneRaw });
+      localTimezone = timeZoneRaw;
+    } catch {
+      return NextResponse.json({ error: "Invalid timeZone." }, { status: 400 });
+    }
   }
 
   const conn = await getUserConnection(supabase, user.id);
@@ -82,6 +98,7 @@ export async function POST(request: Request) {
         google_account_id: conn.google_account_id,
         google_calendar_id: googleCalendarId,
         origin: "synced",
+        local_timezone: localTimezone,
       },
       { onConflict: "owner,local_event_id", ignoreDuplicates: true }
     );
