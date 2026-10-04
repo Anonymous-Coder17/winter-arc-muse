@@ -234,6 +234,89 @@ export interface StudySession {
 }
 
 // ---------------------------------------------------------------------------
+// V3 — Journal & Review: date-based reflection, all private per user
+// ---------------------------------------------------------------------------
+
+export interface JournalEntry {
+  id: string;
+  owner: string;
+  entry_date: string; // YYYY-MM-DD (local)
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DailyReview {
+  id: string;
+  owner: string;
+  review_date: string; // YYYY-MM-DD (local)
+  wins: string | null;
+  problems: string | null;
+  distractions: string | null;
+  adjustment: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WeeklyReview {
+  id: string;
+  owner: string;
+  week_start: string; // YYYY-MM-DD (local, Monday)
+  week_end: string; // YYYY-MM-DD (local, Sunday)
+  what_worked: string | null;
+  what_didnt: string | null;
+  next_adjustment: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Optional baseline capture + final 30-day review for one challenge.
+ * All fields optional — never fabricate missing data.
+ */
+export interface ChallengeReview {
+  id: string;
+  owner: string;
+  challenge_id: string;
+  baseline_study_min: number | null;
+  baseline_reading_pages: number | null;
+  baseline_hifz_ayahs: number | null;
+  baseline_notes: string | null;
+  review_what_worked: string | null;
+  review_what_didnt: string | null;
+  review_adjustment: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Book {
+  id: string;
+  owner: string;
+  name: string;
+  author: string | null;
+  total_pages: number | null;
+  is_active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * V3 reading source of truth. Migration 0005 backfills existing "Reading"
+ * habit_logs into this table (book_id null). New reading is recorded here.
+ */
+export interface ReadingLog {
+  id: string;
+  owner: string;
+  book_id: string | null;
+  log_date: string; // YYYY-MM-DD (local)
+  pages: number;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
 // Challenge helpers
 // ---------------------------------------------------------------------------
 

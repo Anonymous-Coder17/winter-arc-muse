@@ -7,6 +7,7 @@ import type {
   AbstinenceRule,
   DailyRecord,
   LimitLog,
+  ReadingLog,
   UsageLimit,
 } from "@/lib/types";
 
@@ -16,6 +17,7 @@ export interface TodayExtras {
   rules: AbstinenceRule[];
   incidents: AbstinenceIncident[];
   records: DailyRecord[];
+  readingLogs: ReadingLog[];
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -27,6 +29,7 @@ export function useTodayExtras(dateKey: string): TodayExtras {
   const [rules, setRules] = useState<AbstinenceRule[]>([]);
   const [incidents, setIncidents] = useState<AbstinenceIncident[]>([]);
   const [records, setRecords] = useState<DailyRecord[]>([]);
+  const [readingLogs, setReadingLogs] = useState<ReadingLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -49,7 +52,7 @@ export function useTodayExtras(dateKey: string): TodayExtras {
         }
         const dayStart = new Date(dateKey + "T00:00:00").toISOString();
         const dayEnd = new Date(dateKey + "T23:59:59").toISOString();
-        const [l, ll, r, inc, rec] = await Promise.all([
+        const [l, ll, r, inc, rec, rl] = await Promise.all([
           supabase
             .from("usage_limits")
             .select("*")
@@ -77,15 +80,20 @@ export function useTodayExtras(dateKey: string): TodayExtras {
             .select("*")
             .eq("record_date", dateKey)
             .order("created_at", { ascending: false }),
+          supabase
+            .from("reading_logs")
+            .select("*")
+            .eq("log_date", dateKey),
         ]);
         if (cancelled) return;
-        const firstErr = [l, ll, r, inc, rec].find((x) => x.error)?.error;
+        const firstErr = [l, ll, r, inc, rec, rl].find((x) => x.error)?.error;
         if (firstErr) throw firstErr;
         setLimits(l.data ?? []);
         setLimitLogs(ll.data ?? []);
         setRules(r.data ?? []);
         setIncidents(inc.data ?? []);
         setRecords(rec.data ?? []);
+        setReadingLogs(rl.data ?? []);
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : "Failed to load.");
@@ -101,7 +109,7 @@ export function useTodayExtras(dateKey: string): TodayExtras {
   }, [dateKey, nonce]);
 
   return useMemo(
-    () => ({ limits, limitLogs, rules, incidents, records, loading, error, refresh }),
-    [limits, limitLogs, rules, incidents, records, loading, error, refresh]
+    () => ({ limits, limitLogs, rules, incidents, records, readingLogs, loading, error, refresh }),
+    [limits, limitLogs, rules, incidents, records, readingLogs, loading, error, refresh]
   );
 }

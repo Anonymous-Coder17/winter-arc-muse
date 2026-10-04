@@ -10,6 +10,7 @@ import {
   quickLogCount,
   saveJournal,
 } from "./todayActions";
+import { logReadingPages } from "@/lib/journal";
 import { logFor, type CalendarData } from "@/components/calendar/useCalendarData";
 import { toggleHabitDone } from "@/lib/habits";
 import { formatDuration } from "@/lib/dates";
@@ -105,13 +106,15 @@ export function TodayPanel({
   );
 
   const hifzHabit = data.habits.find((h) => h.name.toLowerCase() === "hifz");
-  const readingHabit = data.habits.find((h) => h.name.toLowerCase() === "reading");
   const hifzToday = hifzHabit
     ? Number(logFor(data.habitLogs, hifzHabit.id, dateKey)?.value ?? 0)
     : 0;
-  const readingToday = readingHabit
-    ? Number(logFor(data.habitLogs, readingHabit.id, dateKey)?.value ?? 0)
-    : 0;
+  // V3: reading pages now live in reading_logs (backfilled from the old
+  // "Reading" count habit by migration 0005). Sum today's rows.
+  const readingToday = extras.readingLogs.reduce(
+    (sum, r) => sum + (Number(r.pages) || 0),
+    0
+  );
   const meditation = data.habits.find(
     (h) => h.name.toLowerCase() === "meditation"
   );
@@ -195,7 +198,7 @@ export function TodayPanel({
                   disabled={busy}
                   onClick={() =>
                     run(
-                      () => quickLogCount("Reading", dateKey, v),
+                      () => logReadingPages(dateKey, v, null),
                       `+${v} pages logged.`
                     )
                   }
@@ -224,6 +227,29 @@ export function TodayPanel({
               ))}
             </select>
           </div>
+        </div>
+      </section>
+
+      {/* reflection */}
+      <section aria-label="Reflection">
+        <h3 className="section-title mb-2">How was today?</h3>
+        <div className="surface card-pad flex gap-2">
+          <button
+            className="btn-ghost flex-1 !min-h-[44px]"
+            onClick={() =>
+              router.push(`/progress?tab=reflection&date=${dateKey}`)
+            }
+          >
+            Write journal
+          </button>
+          <button
+            className="btn-ghost flex-1 !min-h-[44px]"
+            onClick={() =>
+              router.push(`/progress?tab=reflection&date=${dateKey}`)
+            }
+          >
+            Daily review
+          </button>
         </div>
       </section>
 
