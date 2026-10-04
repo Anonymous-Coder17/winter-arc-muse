@@ -42,10 +42,14 @@ import {
   type FetchImpl,
 } from "./googleApi";
 import {
+  googleAllDayRange,
+  googleEndTimeZone,
   googleEventToLocal,
+  googleStartTimeZone,
   localEventToGoogle,
   type GoogleApiEvent,
   type LocalEventDraft,
+  type LocalToGoogleOptions,
 } from "./eventMapping";
 
 /** Thrown when the user has no Google Calendar connection at all. */
@@ -100,7 +104,7 @@ const INITIAL_SYNC_DAYS_FORWARD = 180;
 
 const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
 
-/** Row shapes for the 0010 sync tables (owner RLS on all of them). */
+/** Row shapes for the 0010/0011 sync tables (owner RLS on all of them). */
 interface EventMappingRow {
   owner: string;
   local_event_id: string | null;
@@ -109,7 +113,13 @@ interface EventMappingRow {
   google_event_id: string | null;
   google_etag: string | null;
   origin: "google" | "synced";
+  /** Google's own start timezone (sync metadata — NOT the display zone). */
   google_timezone: string | null;
+  /** Google's end timezone, only when it differs from the start zone. */
+  google_end_timezone: string | null;
+  /** All-day date range (end exclusive); NULL for timed events. */
+  google_start_date: string | null;
+  google_end_date: string | null;
   recurrence: string | null;
   last_synced_at: string | null;
   created_at: string;
@@ -123,9 +133,62 @@ interface CalendarEventRow {
   event_date: string;
   start_time: string;
   end_time: string;
+  /** True for all-day events (Google-originated or created as all-day). */
+  is_all_day: boolean;
   notes: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * Extract the round-trip metadata for a Google event: its own timezone
+ * semantics (never the display zone) plus the all-day date range when the
+ * event is all-day. The calendar's timezone is the fallback Google itself
+ * uses for zone-less events.
+ */
+function googleMetaForItem(
+  item: GoogleApiEvent,
+  calendarTimeZone: string | null
+): Pick<
+  EventMappingRow,
+  | "google_timezone"
+  | "google_end_timezone"
+  | "google_start_date"
+  | "google_end_date"
+> {
+  const startTz = googleStartTimeZone(item, calendarTimeZone);
+  const range = googleAllDayRange(item);
+  return {
+    google_timezone: startTz,
+    google_end_timezone: googleEndTimeZone(item, startTz),
+    google_start_date: range?.startDate ?? null,
+    google_end_date: range?.endDate ?? null,
+  };
+}
+
+/**
+ * Build the push options for a local event from its mapping: the preserved
+ * Google timezone(s) for timed events, or the all-day range for all-day
+ * events. When the mapping carries no Google timezone (e.g. a local event
+ * being pushed for the first time), the sync's display zone is used.
+ */
+function pushOptsFor(
+  mapping: EventMappingRow,
+  local: CalendarEventRow,
+  timeZone: string
+): LocalToGoogleOptions {
+  if (local.is_all_day) {
+    return {
+      isAllDay: true,
+      googleStartDate: mapping.google_start_date,
+      googleEndDate: mapping.google_end_date,
+    };
+  }
+  return {
+    googleStartTimeZone: mapping.google_timezone ?? timeZone,
+    googleEndTimeZone:
+      mapping.google_end_timezone ?? mapping.google_timezone ?? timeZone,
+  };
 }
 
 async function markConnectionRevoked(
@@ -257,6 +320,7 @@ async function updateLocalFromDraft(
       event_date: draft.event_date,
       start_time: draft.start_time,
       end_time: draft.end_time,
+      is_all_day: draft.is_all_day,
       notes: draft.notes,
     })
     .eq("id", localEventId)
@@ -304,7 +368,14 @@ async function updateMappingGoogleRef(
   mapping: EventMappingRow,
   googleEventId: string,
   etag: string | null,
-  now: string
+  now: string,
+  meta?: Pick<
+    EventMappingRow,
+    | "google_timezone"
+    | "google_end_timezone"
+    | "google_start_date"
+    | "google_end_date"
+  >
 ): Promise<void> {
   // Identified by (owner, local_event_id) — unique and never null here, so
   // no null-comparison pitfalls on google_event_id.
@@ -314,6 +385,7 @@ async function updateMappingGoogleRef(
       google_event_id: googleEventId,
       google_etag: etag,
       last_synced_at: now,
+      ...(meta ?? {}),
     })
     .eq("owner", userId)
     .eq("local_event_id", mapping.local_event_id as string);
@@ -323,6 +395,12 @@ async function updateMappingGoogleRef(
  * Google -> app for one event item. Handles cancelled events, new imports,
  * tombstones, unchanged skips, Google-side edits, and both-changed
  * conflicts (Google wins, conflict recorded).
+ *
+ * `timeZone` is the DISPLAY zone used to render imported events locally;
+ * `calendarTimeZone` is the Google calendar's own zone, used only as a
+ * fallback when the event carries no timezone of its own. The event's
+ * Google timezone semantics are stored on the mapping — never conflated
+ * with the display zone.
  */
 async function applyGoogleItem(
   supabase: SupabaseClient,
@@ -330,6 +408,7 @@ async function applyGoogleItem(
   googleAccountId: string,
   calendarId: string,
   timeZone: string,
+  calendarTimeZone: string | null,
   item: GoogleApiEvent,
   now: string,
   result: GoogleSyncResult
@@ -365,6 +444,7 @@ async function applyGoogleItem(
   if (!mapping) {
     // Brand-new Google event: import it and link it (origin "google").
     const draft = googleEventToLocal(item, timeZone);
+    const meta = googleMetaForItem(item, calendarTimeZone);
     const { data: inserted, error: insertError } = await supabase
       .from("calendar_events")
       .insert({
@@ -373,6 +453,7 @@ async function applyGoogleItem(
         event_date: draft.event_date,
         start_time: draft.start_time,
         end_time: draft.end_time,
+        is_all_day: draft.is_all_day,
         notes: draft.notes,
       })
       .select("id")
@@ -391,7 +472,7 @@ async function applyGoogleItem(
         google_event_id: googleEventId,
         google_etag: item.etag ?? null,
         origin: "google",
-        google_timezone: timeZone,
+        ...meta,
         recurrence: item.recurrence?.[0] ?? null,
         last_synced_at: now,
       });
@@ -428,12 +509,13 @@ async function applyGoogleItem(
   }
 
   const draft = googleEventToLocal(item, timeZone);
+  const meta = googleMetaForItem(item, calendarTimeZone);
   const locallyModified =
     local.updated_at > (mapping.last_synced_at ?? local.created_at);
   await updateLocalFromDraft(supabase, userId, local.id, draft);
   await supabase
     .from("google_event_mappings")
-    .update({ google_etag: item.etag ?? null, last_synced_at: now })
+    .update({ google_etag: item.etag ?? null, last_synced_at: now, ...meta })
     .eq("owner", userId)
     .eq("local_event_id", mapping.local_event_id);
   if (locallyModified) {
@@ -456,6 +538,7 @@ async function syncCalendarFromGoogle(
   userId: string,
   conn: GoogleCalendarConnection,
   timeZone: string,
+  calendarTimeZone: string | null,
   fetchImpl: FetchImpl,
   accessToken: string,
   calendarId: string,
@@ -495,6 +578,7 @@ async function syncCalendarFromGoogle(
         conn.google_account_id,
         calendarId,
         timeZone,
+        calendarTimeZone,
         item,
         now,
         result
@@ -529,11 +613,18 @@ async function syncCalendarFromGoogle(
  * App -> Google push phase. Only runs when the connection granted the
  * calendar.events scope. Per-mapping errors are recorded as conflicts so one
  * bad mapping never aborts the rest.
+ *
+ * Pushes reconstruct Google events from the local wall-clock (interpreted in
+ * the sync's display `timeZone`) using each mapping's preserved Google
+ * timezone semantics — a title-only edit round-trips to the identical
+ * Google event; a genuine local time edit moves the event while keeping its
+ * Google zone. All-day locals push as start.date/end.date.
  */
 async function pushLocalChanges(
   supabase: SupabaseClient,
   userId: string,
   timeZone: string,
+  calendarTimeZones: Map<string, string | null>,
   fetchImpl: FetchImpl,
   accessToken: string,
   now: string,
@@ -573,14 +664,14 @@ async function pushLocalChanges(
         await clearMappingLink(supabase, userId, mapping);
         continue;
       }
-      const tz = mapping.google_timezone ?? timeZone;
+      const opts = pushOptsFor(mapping, local, timeZone);
       if (!mapping.google_event_id) {
         // New local event linked for sync: create it on Google.
         const created = await createEvent(
           fetchImpl,
           accessToken,
           mapping.google_calendar_id,
-          localEventToGoogle(local, tz)
+          localEventToGoogle(local, timeZone, opts)
         );
         await updateMappingGoogleRef(
           supabase,
@@ -600,7 +691,7 @@ async function pushLocalChanges(
             accessToken,
             mapping.google_calendar_id,
             mapping.google_event_id,
-            localEventToGoogle(local, tz),
+            localEventToGoogle(local, timeZone, opts),
             mapping.google_etag
           );
           await updateMappingGoogleRef(
@@ -621,7 +712,7 @@ async function pushLocalChanges(
               mapping.google_calendar_id,
               mapping.google_event_id
             );
-            const draft = googleEventToLocal(latest, tz);
+            const draft = googleEventToLocal(latest, timeZone);
             await updateLocalFromDraft(supabase, userId, local.id, draft);
             await updateMappingGoogleRef(
               supabase,
@@ -629,7 +720,11 @@ async function pushLocalChanges(
               mapping,
               mapping.google_event_id,
               latest.etag ?? null,
-              now
+              now,
+              googleMetaForItem(
+                latest,
+                calendarTimeZones.get(mapping.google_calendar_id) ?? null
+              )
             );
             result.updated++;
             result.conflicts.push({
@@ -738,17 +833,22 @@ export async function runGoogleSync(
   // (c) Access token, reuse-or-refresh.
   const accessToken = await getAccessToken(supabase, userId, conn);
 
-  // (d) Selected calendars.
+  // (d) Selected calendars, with each calendar's own IANA zone. The zone is
+  // the fallback Google itself uses for events that carry no timezone —
+  // never the display zone.
   const { data: selections } = await supabase
     .from("google_calendar_selections")
-    .select("google_calendar_id")
+    .select("google_calendar_id,time_zone")
     .eq("owner", userId)
     .eq("selected", true);
-  const calendarIds = ((selections ?? []) as Array<{
+  const selectionRows = ((selections ?? []) as Array<{
     google_calendar_id: string;
-  }>)
-    .map((s) => s.google_calendar_id)
-    .filter(Boolean);
+    time_zone: string | null;
+  }>).filter((s) => s.google_calendar_id);
+  const calendarIds = selectionRows.map((s) => s.google_calendar_id);
+  const calendarTimeZones = new Map(
+    selectionRows.map((s) => [s.google_calendar_id, s.time_zone ?? null])
+  );
 
   // (e/f) Google -> app, per calendar. One failing calendar is recorded and
   // the rest still sync.
@@ -759,6 +859,7 @@ export async function runGoogleSync(
         userId,
         conn,
         timeZone,
+        calendarTimeZones.get(calendarId) ?? null,
         fetchImpl,
         accessToken,
         calendarId,
@@ -783,6 +884,7 @@ export async function runGoogleSync(
         supabase,
         userId,
         timeZone,
+        calendarTimeZones,
         fetchImpl,
         accessToken,
         now,
