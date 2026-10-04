@@ -21,3 +21,6 @@ Thumbs.db
 # supabase local
 supabase/.branches
 supabase/.temp
+
+# PWA icons are generated from scripts/pwa-icons.base64.json on npm install
+public/icons/*.png

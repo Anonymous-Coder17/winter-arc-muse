@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "TZ='Asia/Kolkata' node --test --import ./tests/hooks.mjs tests/unit.test.mjs tests/db.test.mjs tests/analytics.test.mjs tests/db_v3.test.mjs tests/db_v3_2.test.mjs tests/pwa.test.mjs"
+    "test": "TZ='Asia/Kolkata' node --test --import ./tests/hooks.mjs tests/unit.test.mjs tests/db.test.mjs tests/analytics.test.mjs tests/db_v3.test.mjs tests/db_v3_2.test.mjs tests/pwa.test.mjs",
+    "postinstall": "node scripts/generate-pwa-icons.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.6.1",
