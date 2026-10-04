@@ -1,41 +1,79 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import {
-  EmptyState,
-  ErrorState,
-  LoadingBlock,
-} from "@/components/ui";
-import {
-  addDays,
-  formatLong,
-  formatShort,
-  todayKey,
-  utcToDayKey,
-  weekStartMonday,
-} from "@/lib/dates";
-import { challengeDayNumber, daysRemaining } from "@/lib/types";
+import { ErrorState, LoadingBlock } from "@/components/ui";
+import { addDays, todayKey, weekStartMonday } from "@/lib/dates";
 import type {
   AbstinenceIncident,
   AbstinenceRule,
+  Book,
   Challenge,
   Habit,
   HabitLog,
   LimitLog,
+  ReadingLog,
+  StudySession,
+  Subject,
+  Task,
+  Topic,
+  TrainingScheduleRow,
   UsageLimit,
+  Workout,
+  WorkoutExercise,
+  WorkoutSession,
+  WorkoutSet,
 } from "@/lib/types";
+import { RangeControl } from "@/components/progress/RangeControl";
+import { TabBar, TABS } from "@/components/progress/TabBar";
+import { Overview } from "@/components/progress/Overview";
+import { HabitsTab } from "@/components/progress/HabitsTab";
+import { DistractionsTab } from "@/components/progress/DistractionsTab";
+import { TrainingTab } from "@/components/progress/TrainingTab";
+import { StudyTab } from "@/components/progress/StudyTab";
+import { HifzTab } from "@/components/progress/HifzTab";
+import { ReadingTab } from "@/components/progress/ReadingTab";
+import { ReflectionTab } from "@/components/progress/ReflectionTab";
+import {
+  computeRange,
+  type RangePreset,
+} from "@/components/progress/normalize";
+import type {
+  ProgressData,
+  ProgressTab,
+  Range,
+} from "@/components/progress/types";
 
-// V1 Progress: truthful per-day records. No streaks, no scores, no heatmaps.
-// What happened is shown; nothing is combined into a rating.
+// V3 Progress: the analytics/review hub. Progressive disclosure via tabs —
+// never a wall of cards. Independent metrics only: no overall life score,
+// no XP, no streaks, no gamification anywhere.
 export default function ProgressPage() {
+  return (
+    <Suspense fallback={<LoadingBlock label="Loading progress…" />}>
+      <ProgressInner />
+    </Suspense>
+  );
+}
+
+const TAB_IDS = TABS.map((t) => t.id);
+
+function ProgressInner() {
+  const searchParams = useSearchParams();
+  const initialTab = searchParams.get("tab");
+  const [tab, setTab] = useState<ProgressTab>(
+    TAB_IDS.includes(initialTab as ProgressTab)
+      ? (initialTab as ProgressTab)
+      : "overview"
+  );
+  const [preset, setPreset] = useState<RangePreset>("30d");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+  const [range, setRange] = useState<Range>(() =>
+    computeRange("30d", null, "", "")
+  );
   const [challenge, setChallenge] = useState<Challenge | null>(null);
-  const [habits, setHabits] = useState<Habit[]>([]);
-  const [logs, setLogs] = useState<HabitLog[]>([]);
-  const [rules, setRules] = useState<AbstinenceRule[]>([]);
-  const [incidents, setIncidents] = useState<AbstinenceIncident[]>([]);
-  const [limits, setLimits] = useState<UsageLimit[]>([]);
-  const [limitLogs, setLimitLogs] = useState<LimitLog[]>([]);
+  const [data, setData] = useState<ProgressData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -54,49 +92,170 @@ export default function ProgressPage() {
           if (!cancelled) setError("Not signed in.");
           return;
         }
-        const start = addDays(todayKey(), -30);
-        const end = todayKey();
-        const [c, h, l, r, inc, lim, ll] = await Promise.all([
-          supabase
-            .from("challenges")
-            .select("*")
-            .eq("owner", user.id)
-            .eq("is_active", true)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle(),
-          supabase.from("habits").select("*").eq("owner", user.id),
+        const owner = user.id;
+
+        // Challenge first: the "Challenge" range preset needs its span.
+        const { data: chData, error: chErr } = await supabase
+          .from("challenges")
+          .select("*")
+          .eq("owner", owner)
+          .eq("is_active", true)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (chErr) throw chErr;
+        if (cancelled) return;
+        const challengeRow = (chData ?? null) as Challenge | null;
+        setChallenge(challengeRow);
+
+        const r = computeRange(preset, challengeRow, customStart, customEnd);
+        setRange(r);
+        const today = todayKey();
+        // Fetch window: selected range ∪ last 30 days (heatmap) ∪ current
+        // week (Tahajjud). Analytics slice per range afterwards.
+        const queryStart = [r.start, addDays(today, -29), weekStartMonday(today)].sort()[0];
+        const incidentFrom = new Date(queryStart + "T00:00:00").toISOString();
+        const incidentTo = new Date(addDays(today, 1) + "T00:00:00").toISOString();
+
+        const [
+          habitsRes,
+          habitLogsRes,
+          rulesRes,
+          incidentsRes,
+          limitsRes,
+          limitLogsRes,
+          workoutsRes,
+          exercisesRes,
+          scheduleRes,
+          sessionsRes,
+          subjectsRes,
+          topicsRes,
+          studySessionsRes,
+          tasksRes,
+          booksRes,
+          readingLogsRes,
+          journalRes,
+        ] = await Promise.all([
+          supabase.from("habits").select("*").eq("owner", owner),
           supabase
             .from("habit_logs")
             .select("*")
-            .gte("log_date", start)
-            .lte("log_date", end),
-          supabase.from("abstinence_rules").select("*").eq("owner", user.id),
+            .eq("owner", owner)
+            .gte("log_date", queryStart)
+            .lte("log_date", today),
+          supabase.from("abstinence_rules").select("*").eq("owner", owner),
           supabase
             .from("abstinence_incidents")
             .select("*")
-            .gte("occurred_at", new Date(start + "T00:00:00").toISOString())
-            .order("occurred_at", { ascending: false })
-            .limit(50),
-          supabase.from("usage_limits").select("*").eq("owner", user.id),
+            .eq("owner", owner)
+            .gte("occurred_at", incidentFrom)
+            .lt("occurred_at", incidentTo)
+            .order("occurred_at", { ascending: true })
+            .limit(500),
+          supabase.from("usage_limits").select("*").eq("owner", owner),
           supabase
             .from("limit_logs")
             .select("*")
-            .gte("log_date", start)
-            .lte("log_date", end),
+            .eq("owner", owner)
+            .gte("log_date", queryStart)
+            .lte("log_date", today),
+          supabase.from("workouts").select("*").eq("owner", owner),
+          supabase.from("workout_exercises").select("*").eq("owner", owner),
+          supabase.from("training_schedule").select("*").eq("owner", owner),
+          supabase
+            .from("workout_sessions")
+            .select("*")
+            .eq("owner", owner)
+            .gte("session_date", queryStart)
+            .lte("session_date", today),
+          supabase.from("subjects").select("*").eq("owner", owner),
+          supabase.from("topics").select("*").eq("owner", owner),
+          supabase
+            .from("study_sessions")
+            .select("*")
+            .eq("owner", owner)
+            .gte("session_date", queryStart)
+            .lte("session_date", today),
+          supabase
+            .from("tasks")
+            .select("*")
+            .eq("owner", owner)
+            .gte("task_date", queryStart)
+            .lte("task_date", today),
+          supabase.from("books").select("*").eq("owner", owner),
+          supabase
+            .from("reading_logs")
+            .select("*")
+            .eq("owner", owner)
+            .gte("log_date", queryStart)
+            .lte("log_date", today),
+          // entry_date only — journal TEXT is never loaded for analytics.
+          supabase
+            .from("journal_entries")
+            .select("entry_date")
+            .eq("owner", owner)
+            .gte("entry_date", queryStart)
+            .lte("entry_date", today),
         ]);
         if (cancelled) return;
-        const firstErr = [c, h, l, r, inc, lim, ll].find(
-          (x) => x.error
-        )?.error;
+
+        const sessions = (sessionsRes.data ?? []) as WorkoutSession[];
+        const sessionIds = sessions.map((s) => s.id);
+        const setsRes =
+          sessionIds.length > 0
+            ? await supabase
+                .from("workout_sets")
+                .select("*")
+                .eq("owner", owner)
+                .in("session_id", sessionIds)
+            : { data: [] as WorkoutSet[], error: null };
+        if (cancelled) return;
+
+        const firstErr = [
+          habitsRes,
+          habitLogsRes,
+          rulesRes,
+          incidentsRes,
+          limitsRes,
+          limitLogsRes,
+          workoutsRes,
+          exercisesRes,
+          scheduleRes,
+          sessionsRes,
+          setsRes,
+          subjectsRes,
+          topicsRes,
+          studySessionsRes,
+          tasksRes,
+          booksRes,
+          readingLogsRes,
+          journalRes,
+        ].find((x) => x.error)?.error;
         if (firstErr) throw firstErr;
-        setChallenge(c.data ?? null);
-        setHabits(h.data ?? []);
-        setLogs(l.data ?? []);
-        setRules(r.data ?? []);
-        setIncidents(inc.data ?? []);
-        setLimits(lim.data ?? []);
-        setLimitLogs(ll.data ?? []);
+
+        setData({
+          challenge: challengeRow,
+          habits: (habitsRes.data ?? []) as Habit[],
+          habitLogs: (habitLogsRes.data ?? []) as HabitLog[],
+          rules: (rulesRes.data ?? []) as AbstinenceRule[],
+          incidents: (incidentsRes.data ?? []) as AbstinenceIncident[],
+          limits: (limitsRes.data ?? []) as UsageLimit[],
+          limitLogs: (limitLogsRes.data ?? []) as LimitLog[],
+          workouts: (workoutsRes.data ?? []) as Workout[],
+          exercises: (exercisesRes.data ?? []) as WorkoutExercise[],
+          sessions,
+          sets: (setsRes.data ?? []) as WorkoutSet[],
+          schedule: (scheduleRes.data ?? []) as TrainingScheduleRow[],
+          subjects: (subjectsRes.data ?? []) as Subject[],
+          topics: (topicsRes.data ?? []) as Topic[],
+          studySessions: (studySessionsRes.data ?? []) as StudySession[],
+          tasks: (tasksRes.data ?? []) as Task[],
+          books: (booksRes.data ?? []) as Book[],
+          readingLogs: (readingLogsRes.data ?? []) as ReadingLog[],
+          journalDates: ((journalRes.data ?? []) as { entry_date: string }[]).map(
+            (j) => j.entry_date
+          ),
+        });
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : "Failed to load.");
@@ -108,175 +267,43 @@ export default function ProgressPage() {
     return () => {
       cancelled = true;
     };
-  }, [nonce]);
+  }, [preset, customStart, customEnd, nonce]);
 
-  // Per-day aggregates for the last 14 days (newest first).
-  const days = useMemo(() => {
-    const out: {
-      key: string;
-      habitsDone: number;
-      incidents: number;
-      limitsOver: number;
-    }[] = [];
-    for (let i = 0; i < 14; i++) {
-      const key = addDays(todayKey(), -i);
-      const dayLogs = logs.filter((x) => x.log_date === key);
-      out.push({
-        key,
-        habitsDone: dayLogs.filter((x) => x.status === "done").length,
-        // occurred_at is UTC on the wire — attribute to the LOCAL day.
-        incidents: incidents.filter(
-          (x) => utcToDayKey(x.occurred_at) === key
-        ).length,
-        limitsOver: limits.filter((lim) => {
-          const log = limitLogs.find(
-            (x) => x.limit_id === lim.id && x.log_date === key
-          );
-          return log && log.minutes_used > lim.daily_limit_min;
-        }).length,
-      });
-    }
-    return out;
-  }, [logs, incidents, limits, limitLogs]);
-
-  // Tahajjud weekly progress (optional, 2x/week default).
-  const tahajjud = useMemo(() => {
-    const habit = habits.find((x) => x.name.toLowerCase() === "tahajjud");
-    if (!habit) return null;
-    const weekStart = weekStartMonday(todayKey());
-    const weekEnd = addDays(weekStart, 6);
-    const count = logs.filter(
-      (x) =>
-        x.habit_id === habit.id &&
-        x.status === "done" &&
-        x.log_date >= weekStart &&
-        x.log_date <= weekEnd
-    ).length;
-    return { habit, count, target: habit.weekly_target ?? 2 };
-  }, [habits, logs]);
-
-  const dayNumber = challenge
-    ? challengeDayNumber(challenge, new Date())
-    : null;
-  const remaining = challenge ? daysRemaining(challenge, new Date()) : null;
-  const pct =
-    challenge && dayNumber !== null && dayNumber >= 1
-      ? Math.min(100, Math.round((Math.min(dayNumber, challenge.duration_days) / challenge.duration_days) * 100))
-      : 0;
-
-  if (loading) return <LoadingBlock />;
+  if (loading) return <LoadingBlock label="Loading progress…" />;
   if (error)
     return <ErrorState message={error} onRetry={() => setNonce((n) => n + 1)} />;
+  if (!data) return null;
 
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="page-title">Progress</h1>
+        <h1 className="page-title">Transformation</h1>
         <p className="page-sub">What happened — recorded, not rated.</p>
       </div>
 
-      {/* challenge */}
-      {challenge && (
-        <section className="surface card-pad" aria-label="Challenge">
-          <p className="text-[11px] uppercase tracking-[0.18em] t-faint">
-            {challenge.title}
-          </p>
-          {dayNumber !== null && dayNumber >= 1 ? (
-            <p className="text-lg font-semibold t-primary mt-1">
-              Day {Math.min(dayNumber, challenge.duration_days)} of{" "}
-              {challenge.duration_days}
-              {remaining !== null && (
-                <span className="text-sm font-normal t-secondary">
-                  {" "}
-                  · {remaining} remaining
-                </span>
-              )}
-            </p>
-          ) : (
-            <p className="text-lg font-semibold t-primary mt-1">
-              Starts {formatLong(challenge.start_date)}
-            </p>
-          )}
-          <div className="h-2 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden mt-3">
-            <div
-              className="h-full rounded-full bg-[#7C8CF8]"
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <p className="text-xs t-faint mt-2">
-            This bar is time elapsed in your challenge — not a score.
-          </p>
-        </section>
+      <RangeControl
+        preset={preset}
+        onPreset={setPreset}
+        customStart={customStart}
+        customEnd={customEnd}
+        onCustomStart={setCustomStart}
+        onCustomEnd={setCustomEnd}
+        challenge={challenge}
+        range={range}
+      />
+
+      <TabBar value={tab} onChange={setTab} />
+
+      {tab === "overview" && (
+        <Overview data={data} range={range} onSelectTab={setTab} />
       )}
-
-      {/* tahajjud weekly progress */}
-      {tahajjud && (
-        <section className="surface card-pad" aria-label="Tahajjud this week">
-          <h2 className="section-title mb-1">Tahajjud · this week</h2>
-          <p className="text-sm t-primary tabular-nums">
-            {tahajjud.count} / {tahajjud.target} times
-          </p>
-          <p className="text-xs t-faint mt-1">
-            Optional and personal — recorded when performed, nothing more.
-          </p>
-        </section>
-      )}
-
-      {/* per-day aggregates */}
-      <section aria-label="Recent days">
-        <h2 className="section-title mb-2">Recent days</h2>
-        <div className="surface card-pad flex flex-col divide-y divide-[#E5E7EB] dark:divide-[#242932]">
-          {days.map((d) => (
-            <div
-              key={d.key}
-              className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0"
-            >
-              <span className="text-sm t-primary">
-                {d.key === todayKey() ? "Today" : formatShort(d.key)}
-              </span>
-              <span className="text-xs t-secondary tabular-nums text-right">
-                {d.habitsDone} habit{d.habitsDone === 1 ? "" : "s"} done
-                {d.incidents > 0 &&
-                  ` · ${d.incidents} incident${d.incidents === 1 ? "" : "s"}`}
-                {d.limitsOver > 0 &&
-                  ` · ${d.limitsOver} limit${d.limitsOver === 1 ? "" : "s"} over`}
-              </span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* incidents history */}
-      <section aria-label="Incident history">
-        <h2 className="section-title mb-2">Incidents</h2>
-        {incidents.length === 0 ? (
-          <EmptyState
-            title="No incidents recorded"
-            body="If one happens, log it from the Today view. It becomes history, not a reset."
-          />
-        ) : (
-          <div className="surface card-pad flex flex-col gap-2">
-            {incidents.map((i) => {
-              const rule = rules.find((r) => r.id === i.rule_id);
-              return (
-                <div key={i.id} className="text-sm">
-                  <span className="t-primary font-medium">
-                    {rule?.name ?? "Unknown"}
-                  </span>{" "}
-                  <span className="t-faint text-xs">
-                    · {new Date(i.occurred_at).toLocaleString()}
-                  </span>
-                  {(i.trigger || i.note) && (
-                    <p className="text-xs t-secondary mt-0.5">
-                      {[i.trigger, i.note].filter(Boolean).join(" — ")}
-                    </p>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+      {tab === "habits" && <HabitsTab data={data} range={range} />}
+      {tab === "distractions" && <DistractionsTab data={data} range={range} />}
+      {tab === "training" && <TrainingTab data={data} range={range} />}
+      {tab === "study" && <StudyTab data={data} range={range} />}
+      {tab === "hifz" && <HifzTab data={data} range={range} />}
+      {tab === "reading" && <ReadingTab data={data} range={range} />}
+      {tab === "reflection" && <ReflectionTab range={range} />}
     </div>
   );
 }
