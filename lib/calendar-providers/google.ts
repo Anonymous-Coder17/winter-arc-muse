@@ -204,16 +204,19 @@ export class GoogleCalendarProvider implements CalendarProvider {
   /**
    * Link a local event to one of the user's SELECTED Google calendars
    * (POST /api/google/mappings) so the next sync pushes it to Google. On
-   * success the event id joins the cached synced-id set.
+   * success the event id joins the cached synced-id set. The client's
+   * display zone is sent so the server can record the mapping's
+   * local_timezone (V4.3.2.2).
    */
   async createEventMapping(
     localEventId: string,
     googleCalendarId: string
   ): Promise<void> {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     await this.requestJson(MAPPINGS, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ localEventId, googleCalendarId }),
+      body: JSON.stringify({ localEventId, googleCalendarId, timeZone }),
     });
     const uid = this.userId();
     if (!uid || !metaCacheAvailable()) return;
