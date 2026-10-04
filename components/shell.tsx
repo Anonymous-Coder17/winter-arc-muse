@@ -11,6 +11,7 @@ const NAV = [
   { href: "/habits", label: "Habits", icon: "✓" },
   { href: "/training", label: "Training", icon: "◉" },
   { href: "/study", label: "Study", icon: "✎" },
+  { href: "/books", label: "Books", icon: "▤" },
   { href: "/progress", label: "Progress", icon: "◈" },
   { href: "/settings", label: "Settings", icon: "⚙" },
 ];
@@ -35,7 +36,7 @@ function NavLink({
       aria-current={active ? "page" : undefined}
       className={[
         "flex items-center gap-3 rounded-xl text-sm font-medium transition-colors touch-manipulation",
-        vertical ? "flex-col gap-1 px-2 py-2 min-w-[64px]" : "px-4 py-3",
+        vertical ? "flex-col gap-1 px-1 py-2 min-w-[48px]" : "px-4 py-3",
         active
           ? "bg-[#5A6AE0]/15 text-[#3D4AC4] dark:text-[#C3CCFF]"
           : "t-secondary hover:t-primary hover:bg-black/5 dark:hover:bg-white/5",

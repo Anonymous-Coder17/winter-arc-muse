@@ -8,6 +8,7 @@ import { addDays } from "@/lib/dates";
 import type {
   AbstinenceIncident,
   AbstinenceRule,
+  Book,
   JournalEntry,
   LimitLog,
   ReadingLog,
@@ -22,6 +23,7 @@ export interface TodayExtras {
   /** entry_date values only — journal TEXT is never loaded here (privacy). */
   journalDates: string[];
   readingLogs: ReadingLog[];
+  books: Book[];
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -34,6 +36,7 @@ export function useTodayExtras(dateKey: string): TodayExtras {
   const [incidents, setIncidents] = useState<AbstinenceIncident[]>([]);
   const [journalDates, setJournalDates] = useState<string[]>([]);
   const [readingLogs, setReadingLogs] = useState<ReadingLog[]>([]);
+  const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -54,7 +57,7 @@ export function useTodayExtras(dateKey: string): TodayExtras {
         const nextDayStart = new Date(
           addDays(dateKey, 1) + "T00:00:00"
         ).toISOString();
-        const [limitRows, limitLogRows, ruleRows, incidentRows, journalRows, readingLogRows] =
+        const [limitRows, limitLogRows, ruleRows, incidentRows, journalRows, readingLogRows, bookRows] =
           await Promise.all([
             db.list<UsageLimit>("usage_limits", {
               eq: { is_active: true },
@@ -79,6 +82,14 @@ export function useTodayExtras(dateKey: string): TodayExtras {
               limit: 1,
             }),
             db.list<ReadingLog>("reading_logs", { eq: { log_date: dateKey } }),
+            // Active books for the reading quick-log (same ordering as getBooks).
+            db.list<Book>("books", {
+              eq: { is_active: true },
+              order: [
+                { col: "sort_order", ascending: true },
+                { col: "name", ascending: true },
+              ],
+            }),
           ]);
         if (cancelled) return;
         setLimits(limitRows);
@@ -87,6 +98,7 @@ export function useTodayExtras(dateKey: string): TodayExtras {
         setIncidents(incidentRows);
         setJournalDates(journalRows.map((r) => r.entry_date));
         setReadingLogs(readingLogRows);
+        setBooks(bookRows);
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : "Failed to load.");
@@ -102,7 +114,7 @@ export function useTodayExtras(dateKey: string): TodayExtras {
   }, [dateKey, tick, nonce]);
 
   return useMemo(
-    () => ({ limits, limitLogs, rules, incidents, journalDates, readingLogs, loading, error, refresh }),
-    [limits, limitLogs, rules, incidents, journalDates, readingLogs, loading, error, refresh]
+    () => ({ limits, limitLogs, rules, incidents, journalDates, readingLogs, books, loading, error, refresh }),
+    [limits, limitLogs, rules, incidents, journalDates, readingLogs, books, loading, error, refresh]
   );
 }

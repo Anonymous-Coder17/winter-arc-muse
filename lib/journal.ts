@@ -8,7 +8,7 @@
 // Privacy note: journal content is only ever displayed inside the journal UI.
 // Never include it in analytics summaries or any other surface.
 
-import { getDb } from "@/lib/sync/write";
+import { getDb, getPort } from "@/lib/sync/write";
 import type {
   Book,
   Challenge,
@@ -18,6 +18,7 @@ import type {
   ReadingLog,
   WeeklyReview,
 } from "@/lib/types";
+import type { Mutation } from "@/lib/sync/types";
 
 export type {
   Book,
@@ -230,6 +231,8 @@ export async function createBook(
   author?: string,
   totalPages?: number
 ): Promise<Book> {
+  const cleanName = name.trim();
+  if (!cleanName) throw new Error("Give the book a name.");
   const db = getDb();
   const last = (
     await db.list<Book>("books", {
@@ -238,13 +241,25 @@ export async function createBook(
     })
   )[0];
   const row = await db.insert("books", {
-    name,
+    name: cleanName,
     author: author?.trim() || null,
     total_pages: totalPages && totalPages > 0 ? totalPages : null,
     is_active: true,
     sort_order: (last?.sort_order ?? -1) + 1,
   });
   return row as unknown as Book;
+}
+
+/** Books that have been archived. Same ordering as getBooks. */
+export async function getArchivedBooks(): Promise<Book[]> {
+  const db = getDb();
+  return db.list<Book>("books", {
+    eq: { is_active: false },
+    order: [
+      { col: "sort_order", ascending: true },
+      { col: "name", ascending: true },
+    ],
+  });
 }
 
 export async function updateBook(
@@ -259,6 +274,12 @@ export async function updateBook(
 export async function archiveBook(id: string): Promise<void> {
   const db = getDb();
   await db.update("books", id, { is_active: false });
+}
+
+/** Restore an archived book. Archive is just a flag, so restore is safe. */
+export async function restoreBook(id: string): Promise<void> {
+  const db = getDb();
+  await db.update("books", id, { is_active: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +321,47 @@ export async function getReadingLogs(
     lte: { log_date: end },
     order: [{ col: "log_date", ascending: true }],
   });
+}
+
+// ---------------------------------------------------------------------------
+// Reading-log corrections.
+//
+// There is deliberately NO delete function for reading logs (and no delete
+// for books — archive only). Two reasons:
+//  1. Additive-sync resurrection race: a delete queued locally could lose to
+//     a queued insert/increment for the same row replaying from another
+//     device, silently resurrecting the "deleted" row.
+//  2. History preservation: logs are the record of what happened; to correct
+//     a mistaken entry, set its pages to 0 with updateReadingLogPages.
+// ---------------------------------------------------------------------------
+
+/**
+ * Correct a reading-log row's page count (absolute value, not a delta).
+ * Validates pages as an integer >= 0.
+ *
+ * Guard: reading pages are normally written with `db.increment`, whose
+ * mutation replays as "apply delta on top of the latest remote value". If an
+ * unflushed (pending/inflight/failed) mutation is still queued for this row,
+ * an absolute write could clobber that delta during replay, so we refuse and
+ * ask the user to try again once the sync has flushed. Read path: the
+ * durable `_mutations` store via getPort() (same store the engine and
+ * dropQueuedMutations use).
+ */
+export async function updateReadingLogPages(
+  id: string,
+  pages: number
+): Promise<void> {
+  if (!Number.isInteger(pages) || pages < 0)
+    throw new Error("Pages must be a whole number of 0 or more.");
+  const port = getPort();
+  const queued = (await port.list("_mutations", {
+    eq: { record_id: id },
+  })) as Mutation[];
+  const unsynced = queued.filter((m) => m.status !== "superseded");
+  if (unsynced.length > 0)
+    throw new Error("Sync in progress — please wait a moment and try again.");
+  const db = getDb();
+  await db.update("reading_logs", id, { pages });
 }
 
 // ---------------------------------------------------------------------------

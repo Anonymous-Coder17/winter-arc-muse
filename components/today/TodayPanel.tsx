@@ -54,6 +54,8 @@ export function TodayPanel({
   const [incidentNote, setIncidentNote] = useState("");
   const [limitToLog, setLimitToLog] = useState<UsageLimit | null>(null);
   const [minutes, setMinutes] = useState("15");
+  const [selectedBook, setSelectedBook] = useState("");
+  const [pagesInput, setPagesInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
 
@@ -112,6 +114,45 @@ export function TodayPanel({
     (sum, r) => sum + (Number(r.pages) || 0),
     0
   );
+  // V4.4: per-book totals — multiple rows per (log_date, book_id) are legal
+  // (cross-device additive), so SUM(pages) grouped by book_id.
+  // Key "" = unbooked rows; unknown ids (archived since) are labelled later.
+  const readingByBook = extras.readingLogs.reduce<Map<string, number>>(
+    (map, r) => {
+      const key = r.book_id ?? "";
+      map.set(key, (map.get(key) ?? 0) + (Number(r.pages) || 0));
+      return map;
+    },
+    new Map()
+  );
+  const bookNameById = new Map(extras.books.map((b) => [b.id, b.name]));
+  const readingBreakdown = [...readingByBook.entries()]
+    .sort(([a], [b]) => {
+      const orderA = extras.books.findIndex((bk) => bk.id === a);
+      const orderB = extras.books.findIndex((bk) => bk.id === b);
+      // Known books in list order (sort_order, name); unbooked "" and
+      // archived ids (index -1) go last, in that order.
+      return (
+        (orderA === -1 ? extras.books.length + (a === "" ? 0 : 1) : orderA) -
+        (orderB === -1 ? extras.books.length + (b === "" ? 0 : 1) : orderB)
+      );
+    })
+    .map(([bookId, pages]) => ({
+      bookId,
+      pages,
+      label: bookId === "" ? "No book" : (bookNameById.get(bookId) ?? "Archived book"),
+    }));
+  // The selected book may have been archived since the list loaded —
+  // fall back to unbooked rather than holding a stale id.
+  const effectiveBookId = extras.books.some((b) => b.id === selectedBook)
+    ? selectedBook
+    : "";
+  const effectiveBookName =
+    effectiveBookId !== "" ? bookNameById.get(effectiveBookId) : null;
+  const bookSuffix = effectiveBookName ? ` for ${effectiveBookName}` : "";
+  function logPages(fn: (bookId: string | null) => Promise<unknown>, doneMsg: string) {
+    return run(() => fn(effectiveBookId || null), doneMsg);
+  }
   const meditation = data.habits.find(
     (h) => h.name.toLowerCase() === "meditation"
   );
@@ -189,25 +230,84 @@ export function TodayPanel({
             </div>
           </div>
           <div className="surface card-pad !p-3">
+            <select
+              className="input !min-h-[36px] !py-1.5 text-xs w-full mb-1.5"
+              value={effectiveBookId}
+              onChange={(e) => setSelectedBook(e.target.value)}
+              disabled={busy}
+              aria-label="Select book"
+            >
+              <option value="">No book</option>
+              {extras.books.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
             <p className="text-xs t-secondary mb-1.5">
               Reading · {readingToday} pages
             </p>
-            <div className="flex flex-wrap gap-1.5">
+            {readingByBook.size === 0 ? (
+              <p className="text-xs t-faint mb-1.5">
+                No reading logged today
+              </p>
+            ) : (
+              readingBreakdown.map((line) => (
+                <p
+                  key={line.bookId === "" ? "unbooked" : line.bookId}
+                  className="text-xs t-secondary tabular-nums mb-0.5 truncate"
+                >
+                  {line.label} · {line.pages} pages
+                </p>
+              ))
+            )}
+            <div className="flex flex-wrap gap-1.5 mt-1.5">
               {[5, 10, 20].map((v) => (
                 <button
                   key={v}
                   className="seg-btn !min-h-[36px] !px-2.5"
                   disabled={busy}
                   onClick={() =>
-                    run(
-                      () => logReadingPages(dateKey, v, null),
-                      `+${v} pages logged.`
+                    logPages(
+                      (bookId) => logReadingPages(dateKey, v, bookId),
+                      `+${v} pages logged${bookSuffix}.`
                     )
                   }
                 >
                   +{v}
                 </button>
               ))}
+            </div>
+            <div className="flex flex-wrap gap-1.5 mt-1.5">
+              <input
+                className="input !min-h-[36px] !py-1.5 text-xs flex-1 min-w-[56px]"
+                type="number"
+                min={1}
+                inputMode="numeric"
+                value={pagesInput}
+                onChange={(e) => setPagesInput(e.target.value)}
+                disabled={busy}
+                aria-label="Pages"
+                placeholder="Pages"
+              />
+              <button
+                className="btn-primary !min-h-[36px] !px-3 text-xs shrink-0"
+                disabled={busy}
+                aria-label="Log reading pages"
+                onClick={() => {
+                  const n = Number(pagesInput);
+                  if (!Number.isInteger(n) || n <= 0) {
+                    note("Enter a positive number of pages.");
+                    return;
+                  }
+                  logPages(async (bookId) => {
+                    await logReadingPages(dateKey, n, bookId);
+                    setPagesInput("");
+                  }, `+${n} pages logged${bookSuffix}.`);
+                }}
+              >
+                Add
+              </button>
             </div>
           </div>
           <div className="surface card-pad !p-3">
