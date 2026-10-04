@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Field, Modal } from "@/components/ui";
 import { useTodayExtras } from "./useTodayExtras";
 import {
@@ -8,12 +9,15 @@ import {
   logIncident,
   quickLogCount,
   saveJournal,
-  startSession,
 } from "./todayActions";
 import { logFor, type CalendarData } from "@/components/calendar/useCalendarData";
 import { toggleHabitDone } from "@/lib/habits";
-import { timeLabel } from "@/lib/dates";
-import type { Task, UsageLimit } from "@/lib/types";
+import { formatDuration } from "@/lib/dates";
+import { useTraining, exercisesFor } from "@/components/training/useTraining";
+import { useStudy } from "@/components/study/useStudy";
+import { scheduledWorkoutForDate } from "@/lib/training";
+import { sumDurations } from "@/lib/study";
+import type { UsageLimit } from "@/lib/types";
 
 function QuickButton({
   label,
@@ -44,6 +48,7 @@ export function TodayPanel({
 }) {
   const extras = useTodayExtras(dateKey);
   const { refresh } = data;
+  const router = useRouter();
   const [incidentRule, setIncidentRule] = useState<string | null>(null);
   const [trigger, setTrigger] = useState("");
   const [incidentNote, setIncidentNote] = useState("");
@@ -75,12 +80,30 @@ export function TodayPanel({
     }
   }
 
-  const workoutTasks: Task[] = data.tasks.filter(
-    (t) => t.task_date === dateKey && t.kind === "workout"
+  // V2 training + study (scheduled workout / today's study time).
+  // Planned tasks still live in the DayView timeline; these sections show
+  // the training system and recorded study reality.
+  const training = useTraining(dateKey, dateKey);
+  const study = useStudy(dateKey, dateKey);
+  const scheduled = scheduledWorkoutForDate(
+    training.schedule,
+    training.workouts,
+    dateKey
   );
-  const studyTasks: Task[] = data.tasks.filter(
-    (t) => t.task_date === dateKey && t.kind === "study"
+  const todayWorkoutSession = training.sessions.find(
+    (s) =>
+      s.workout_id === scheduled?.id &&
+      (s.status === "completed" || s.status === "in_progress")
   );
+  const studySeconds = sumDurations(study.sessions);
+  const recentStudy = study.sessions[0];
+  const recentStudySubject = study.subjects.find(
+    (x) => x.id === recentStudy?.subject_id
+  );
+  const recentStudyTopic = study.topics.find(
+    (x) => x.id === recentStudy?.topic_id
+  );
+
   const hifzHabit = data.habits.find((h) => h.name.toLowerCase() === "hifz");
   const readingHabit = data.habits.find((h) => h.name.toLowerCase() === "reading");
   const hifzToday = hifzHabit
@@ -96,9 +119,6 @@ export function TodayPanel({
     ? logFor(data.habitLogs, meditation.id, dateKey)?.status === "done"
     : false;
   const journalEntries = extras.records.filter((r) => r.kind === "journal");
-  const sessionsToday = extras.records.filter(
-    (r) => r.kind === "study_session" || r.kind === "workout_session"
-  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -134,17 +154,11 @@ export function TodayPanel({
           />
           <QuickButton
             label="Start study"
-            disabled={busy}
-            onClick={() =>
-              run(() => startSession("study_session", dateKey), "Study session started.")
-            }
+            onClick={() => router.push("/study")}
           />
           <QuickButton
             label="Start workout"
-            disabled={busy}
-            onClick={() =>
-              run(() => startSession("workout_session", dateKey), "Workout started.")
-            }
+            onClick={() => router.push("/training")}
           />
           <QuickButton label="✎ Journal" onClick={() => setJournalOpen(true)} />
         </div>
@@ -217,42 +231,39 @@ export function TodayPanel({
       <section aria-label="Training">
         <h3 className="section-title mb-2">Training</h3>
         <div className="surface card-pad">
-          {workoutTasks.length === 0 && sessionsToday.filter(s => s.kind === 'workout_session').length === 0 ? (
-            <p className="text-sm t-secondary">
-              No workout planned today.{" "}
+          {training.loading ? (
+            <p className="text-sm t-faint">Loading…</p>
+          ) : scheduled ? (
+            <div className="flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium t-primary">{scheduled.name}</p>
+                <p className="text-xs t-secondary">
+                  {scheduled.type === "structured"
+                    ? `${exercisesFor(training.exercises, scheduled.id).length} exercises`
+                    : (scheduled.description ?? "Completion workout")}
+                  {todayWorkoutSession?.status === "completed"
+                    ? " · ✓ completed"
+                    : todayWorkoutSession?.status === "in_progress"
+                      ? " · in progress"
+                      : ""}
+                </p>
+              </div>
               <button
-                className="text-[#5A6AE0] dark:text-[#AAB6FF] font-medium disabled:opacity-50"
-                disabled={busy}
-                onClick={() =>
-                  run(
-                    () => startSession("workout_session", dateKey),
-                    "Workout started."
-                  )
-                }
+                className="btn-primary !min-h-[48px] shrink-0"
+                onClick={() => router.push("/training")}
               >
-                Start one anyway
+                {todayWorkoutSession?.status === "in_progress"
+                  ? "Continue"
+                  : todayWorkoutSession
+                    ? "Open"
+                    : "Start workout"}
               </button>
-            </p>
+            </div>
           ) : (
-            <ul className="flex flex-col gap-2">
-              {workoutTasks.map((t) => (
-                <li key={t.id} className="flex items-center gap-2 text-sm">
-                  <span
-                    className={t.state === "done" ? "line-through t-faint" : "t-primary"}
-                  >
-                    {t.title}
-                  </span>
-                  <span className="text-xs t-faint">
-                    {t.state === "done" ? "· done" : t.start_time ? `· ${timeLabel(t.start_time)}` : "· planned"}
-                  </span>
-                </li>
-              ))}
-              {sessionsToday.filter(s => s.kind === 'workout_session').map((s) => (
-                <li key={s.id} className="text-sm t-secondary">
-                  Workout started — {s.body}
-                </li>
-              ))}
-            </ul>
+            <p className="text-sm t-secondary">
+              <span className="font-semibold t-primary tracking-wide">REST DAY</span>
+              {" — "}recovery is part of the plan.
+            </p>
           )}
         </div>
       </section>
@@ -261,42 +272,32 @@ export function TodayPanel({
       <section aria-label="Study">
         <h3 className="section-title mb-2">Study</h3>
         <div className="surface card-pad">
-          {studyTasks.length === 0 && sessionsToday.filter(s => s.kind === 'study_session').length === 0 ? (
-            <p className="text-sm t-secondary">
-              No study blocks planned today.{" "}
-              <button
-                className="text-[#5A6AE0] dark:text-[#AAB6FF] font-medium disabled:opacity-50"
-                disabled={busy}
-                onClick={() =>
-                  run(
-                    () => startSession("study_session", dateKey),
-                    "Study session started."
-                  )
-                }
-              >
-                Start a session
-              </button>
-            </p>
+          {study.loading ? (
+            <p className="text-sm t-faint">Loading…</p>
           ) : (
-            <ul className="flex flex-col gap-2">
-              {studyTasks.map((t) => (
-                <li key={t.id} className="flex items-center gap-2 text-sm">
-                  <span
-                    className={t.state === "done" ? "line-through t-faint" : "t-primary"}
-                  >
-                    {t.title}
+            <div className="flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm t-primary">
+                  Today:{" "}
+                  <span className="font-semibold tabular-nums">
+                    {formatDuration(studySeconds)}
                   </span>
-                  <span className="text-xs t-faint">
-                    {t.state === "done" ? "· done" : t.start_time ? `· ${timeLabel(t.start_time)}` : "· planned"}
-                  </span>
-                </li>
-              ))}
-              {sessionsToday.filter(s => s.kind === 'study_session').map((s) => (
-                <li key={s.id} className="text-sm t-secondary">
-                  Session started — {s.body}
-                </li>
-              ))}
-            </ul>
+                </p>
+                {recentStudy && recentStudySubject && (
+                  <p className="text-xs t-faint truncate">
+                    Recent: {recentStudySubject.name}
+                    {recentStudyTopic ? ` → ${recentStudyTopic.name}` : ""} ·{" "}
+                    {formatDuration(recentStudy.duration_seconds)}
+                  </p>
+                )}
+              </div>
+              <button
+                className="btn-primary !min-h-[48px] shrink-0"
+                onClick={() => router.push("/study")}
+              >
+                Start study
+              </button>
+            </div>
           )}
         </div>
       </section>

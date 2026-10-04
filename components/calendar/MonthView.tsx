@@ -2,6 +2,8 @@
 
 import { useMemo } from "react";
 import { isToday, monthGridStart, toDayKey } from "@/lib/dates";
+import { scheduledWorkoutForDate } from "@/lib/training";
+import type { TrainingData } from "@/components/training/useTraining";
 import type { CalendarData } from "./useCalendarData";
 
 const DOW = ["M", "T", "W", "T", "F", "S", "S"];
@@ -9,10 +11,12 @@ const DOW = ["M", "T", "W", "T", "F", "S", "S"];
 export function MonthView({
   dateKey,
   data,
+  training,
   onSelectDay,
 }: {
   dateKey: string;
   data: CalendarData;
+  training?: TrainingData;
   onSelectDay: (key: string) => void;
 }) {
   const year = Number(dateKey.slice(0, 4));
@@ -43,9 +47,13 @@ export function MonthView({
         ))}
         {cells.map((d) => {
           const inMonth = d.slice(0, 7) === dateKey.slice(0, 7);
+          const scheduled = training
+            ? scheduledWorkoutForDate(training.schedule, training.workouts, d)
+            : null;
           const items =
             data.tasks.filter((t) => t.task_date === d).length +
-            data.events.filter((e) => e.event_date === d).length;
+            data.events.filter((e) => e.event_date === d).length +
+            (scheduled ? 1 : 0);
           const done = data.tasks.filter(
             (t) => t.task_date === d && t.state === "done"
           ).length;

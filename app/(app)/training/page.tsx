@@ -1,178 +1,220 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { useMemo, useState } from "react";
 import {
   EmptyState,
   ErrorState,
   LoadingBlock,
   Modal,
 } from "@/components/ui";
-import { TaskForm } from "@/components/calendar/forms";
-import { addDays, formatShort, todayKey } from "@/lib/dates";
-import type { DailyRecord, Task } from "@/lib/types";
+import { useTraining, exercisesFor } from "@/components/training/useTraining";
+import {
+  ExerciseManager,
+  ScheduleEditor,
+  WorkoutModal,
+} from "@/components/training/manage";
+import { SessionLogger } from "@/components/training/logger";
+import { ExercisePRs, TrainingHistory } from "@/components/training/history";
+import { scheduledWorkoutForDate } from "@/lib/training";
+import { todayKey } from "@/lib/dates";
+import type { Workout } from "@/lib/types";
 
-// V1 Training: the week's planned workouts and started sessions.
-// No set history, no analytics — those are V2/V3.
 export default function TrainingPage() {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [sessions, setSessions] = useState<DailyRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [nonce, setNonce] = useState(0);
+  const data = useTraining();
+  const { workouts, exercises, schedule, sessions, sets } = data;
+  const [logging, setLogging] = useState<Workout | null>(null);
+  const [managing, setManaging] = useState<Workout | null>(null);
+  const [addingWorkout, setAddingWorkout] = useState(false);
+  const [editingWorkout, setEditingWorkout] = useState<Workout | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      setError(null);
-      try {
-        const supabase = createClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          if (!cancelled) setError("Not signed in.");
-          return;
-        }
-        const start = addDays(todayKey(), -7);
-        const end = addDays(todayKey(), 14);
-        const [t, s] = await Promise.all([
-          supabase
-            .from("tasks")
-            .select("*")
-            .eq("kind", "workout")
-            .gte("task_date", start)
-            .lte("task_date", end)
-            .order("task_date")
-            .order("start_time", { ascending: true, nullsFirst: false }),
-          supabase
-            .from("daily_records")
-            .select("*")
-            .eq("kind", "workout_session")
-            .gte("record_date", start)
-            .lte("record_date", end)
-            .order("created_at", { ascending: false }),
-        ]);
-        if (cancelled) return;
-        if (t.error) throw t.error;
-        if (s.error) throw s.error;
-        setTasks(t.data ?? []);
-        setSessions(s.data ?? []);
-      } catch (err) {
-        if (!cancelled)
-          setError(err instanceof Error ? err.message : "Failed to load.");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [nonce]);
+  const today = todayKey();
+  const todaysWorkout = useMemo(
+    () => scheduledWorkoutForDate(schedule, workouts, today),
+    [schedule, workouts, today]
+  );
+  const todaysSession = useMemo(
+    () =>
+      sessions.find(
+        (s) =>
+          s.session_date === today &&
+          s.workout_id === todaysWorkout?.id &&
+          (s.status === "completed" || s.status === "in_progress")
+      ),
+    [sessions, today, todaysWorkout]
+  );
 
-  const grouped = useMemo(() => {
-    const map = new Map<string, Task[]>();
-    for (const t of tasks) {
-      const arr = map.get(t.task_date) ?? [];
-      arr.push(t);
-      map.set(t.task_date, arr);
-    }
-    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [tasks]);
+  if (data.loading) return <LoadingBlock />;
+  if (data.error)
+    return <ErrorState message={data.error} onRetry={data.refresh} />;
 
-  if (loading) return <LoadingBlock />;
-  if (error)
-    return <ErrorState message={error} onRetry={() => setNonce((n) => n + 1)} />;
+  const structured = workouts.filter((w) => w.type === "structured");
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="page-title">Training</h1>
-          <p className="page-sub">Planned workouts and completed sessions.</p>
+          <p className="page-sub">What to train, what you did, how you progress.</p>
         </div>
-        <button className="btn-primary" onClick={() => setAdding(true)}>
-          + Plan workout
+        <button className="btn-primary shrink-0" onClick={() => setAddingWorkout(true)}>
+          + Workout
         </button>
       </div>
 
-      <section>
-        <h2 className="section-title mb-2">Upcoming & recent workouts</h2>
-        {grouped.length === 0 ? (
+      {/* today */}
+      <section aria-label="Today's training">
+        <h2 className="section-title mb-2">Today</h2>
+        {todaysWorkout ? (
+          <div className="surface card-pad flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold t-primary">{todaysWorkout.name}</p>
+              <p className="text-xs t-secondary">
+                {todaysWorkout.type === "structured"
+                  ? `${exercisesFor(exercises, todaysWorkout.id).length} exercises`
+                  : (todaysWorkout.description ?? "Completion workout")}
+                {todaysSession?.status === "completed" ? " · ✓ completed" : ""}
+                {todaysSession?.status === "in_progress" ? " · in progress" : ""}
+              </p>
+            </div>
+            <button
+              className="btn-primary !min-h-[48px] shrink-0"
+              onClick={() => setLogging(todaysWorkout)}
+            >
+              {todaysSession?.status === "in_progress"
+                ? "Continue"
+                : todaysSession?.status === "completed"
+                  ? "Log again"
+                  : "Start workout"}
+            </button>
+          </div>
+        ) : (
+          <div className="surface card-pad">
+            <p className="text-sm font-semibold t-primary tracking-wide">REST DAY</p>
+            <p className="text-xs t-secondary mt-1">
+              Recovery is part of the plan — not a missed workout.
+            </p>
+          </div>
+        )}
+      </section>
+
+      {/* workouts */}
+      <section aria-label="Workouts">
+        <h2 className="section-title mb-2">Workouts</h2>
+        {workouts.length === 0 ? (
           <EmptyState
-            title="No workouts planned"
-            body="Schedule a workout from the calendar, or plan one here."
+            title="No workouts yet"
+            body="Create your first workout — structured with sets, or a simple completion workout."
             action={
-              <button className="btn-primary" onClick={() => setAdding(true)}>
-                Plan your first workout
+              <button className="btn-primary" onClick={() => setAddingWorkout(true)}>
+                Create workout
               </button>
             }
           />
         ) : (
-          <div className="flex flex-col gap-3">
-            {grouped.map(([date, dayTasks]) => (
-              <div key={date} className="surface card-pad">
-                <p className="text-xs font-medium t-secondary uppercase tracking-wide mb-2">
-                  {formatShort(date)}
-                </p>
-                <ul className="flex flex-col gap-1.5">
-                  {dayTasks.map((t) => (
-                    <li key={t.id} className="flex items-center gap-2 text-sm">
-                      <span
-                        className={
-                          t.state === "done"
-                            ? "line-through t-faint"
-                            : "t-primary"
-                        }
-                      >
-                        {t.title}
-                      </span>
-                      <span className="text-xs t-faint">
-                        {t.state === "done" ? "· done" : "· planned"}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+          <div className="flex flex-col gap-2">
+            {workouts.map((w) => (
+              <div key={w.id} className="surface card-pad !p-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium t-primary">
+                      {w.name}
+                      {!w.is_active && (
+                        <span className="text-xs t-faint font-normal"> · paused</span>
+                      )}
+                    </p>
+                    <p className="text-xs t-faint">
+                      {w.type === "structured"
+                        ? `${exercisesFor(exercises, w.id).length} exercises`
+                        : (w.description ?? "Completion")}
+                    </p>
+                  </div>
+                  {w.type === "structured" && (
+                    <button
+                      className="btn-ghost !min-h-[40px] !px-3 text-xs shrink-0"
+                      onClick={() => setManaging(w)}
+                    >
+                      Exercises
+                    </button>
+                  )}
+                  <button
+                    className="btn-ghost !min-h-[40px] !px-3 text-xs shrink-0"
+                    onClick={() => setEditingWorkout(w)}
+                  >
+                    Edit
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         )}
       </section>
 
-      <section>
-        <h2 className="section-title mb-2">Recent sessions</h2>
-        {sessions.length === 0 ? (
-          <EmptyState
-            title="No sessions yet"
-            body="Use “Start workout” on the Today view to record one."
-          />
-        ) : (
-          <div className="surface card-pad flex flex-col gap-2">
-            {sessions.map((s) => (
-              <p key={s.id} className="text-sm t-primary">
-                {formatShort(s.record_date)} — {s.title}{" "}
-                <span className="t-faint text-xs">{s.body}</span>
-              </p>
-            ))}
-          </div>
-        )}
+      {/* schedule */}
+      <section aria-label="Weekly schedule">
+        <h2 className="section-title mb-2">Weekly schedule</h2>
+        <ScheduleEditor
+          schedule={schedule}
+          workouts={workouts}
+          onChanged={data.refresh}
+        />
       </section>
 
-      {adding && (
-        <Modal title="Plan workout" onClose={() => setAdding(false)}>
-          <TaskForm
-            dateKey={todayKey()}
-            presetKind="workout"
-            showDateField
-            onSaved={() => {
-              setAdding(false);
-              setNonce((n) => n + 1);
-            }}
+      {/* personal records */}
+      {structured.map((w) => (
+        <ExercisePRs
+          key={w.id}
+          workout={w}
+          exercises={exercises}
+          sessions={sessions}
+          sets={sets}
+        />
+      ))}
+
+      {/* history */}
+      <section aria-label="History">
+        <h2 className="section-title mb-2">History</h2>
+        <TrainingHistory
+          sessions={sessions}
+          sets={sets}
+          exercises={exercises}
+          workouts={workouts}
+        />
+      </section>
+
+      {addingWorkout && (
+        <WorkoutModal
+          title="New workout"
+          onClose={() => setAddingWorkout(false)}
+          onSaved={data.refresh}
+        />
+      )}
+      {editingWorkout && (
+        <WorkoutModal
+          title="Edit workout"
+          initial={editingWorkout}
+          onClose={() => setEditingWorkout(null)}
+          onSaved={data.refresh}
+        />
+      )}
+      {managing && (
+        <Modal title={`${managing.name} — exercises`} onClose={() => setManaging(null)}>
+          <ExerciseManager
+            workout={managing}
+            exercises={exercises}
+            onChanged={data.refresh}
           />
         </Modal>
+      )}
+      {logging && (
+        <SessionLogger
+          workout={logging}
+          exercises={exercises}
+          sessions={sessions}
+          sets={sets}
+          dateKey={today}
+          onClose={() => setLogging(null)}
+          onSaved={data.refresh}
+        />
       )}
     </div>
   );

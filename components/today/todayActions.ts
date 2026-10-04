@@ -122,28 +122,6 @@ export async function logIncident(
   if (error) throw error;
 }
 
-// ---- sessions (start study / start workout) ----
-
-export async function startSession(
-  kind: "study_session" | "workout_session",
-  dateKey: string,
-  title?: string
-): Promise<void> {
-  const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in.");
-  const { error } = await supabase.from("daily_records").insert({
-    owner: user.id,
-    record_date: dateKey,
-    kind,
-    title: title ?? (kind === "study_session" ? "Study session" : "Workout"),
-    body: `Started at ${new Date().toLocaleTimeString()}`,
-  });
-  if (error) throw error;
-}
-
 // ---- journal ----
 
 export async function saveJournal(

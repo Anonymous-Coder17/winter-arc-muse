@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useCalendarData } from "@/components/calendar/useCalendarData";
+import { useTraining } from "@/components/training/useTraining";
 import { DayView } from "@/components/calendar/DayView";
 import { WeekView } from "@/components/calendar/WeekView";
 import { MonthView } from "@/components/calendar/MonthView";
@@ -29,6 +30,7 @@ export default function CalendarPage() {
     [view, dateKey]
   );
   const data = useCalendarData(startKey, endKey);
+  const training = useTraining(startKey, endKey);
 
   const challenge = data.challenge;
   const dayNumber =
@@ -131,11 +133,12 @@ export default function CalendarPage() {
       ) : data.loading ? (
         <LoadingBlock />
       ) : view === "day" ? (
-        <DayView dateKey={dateKey} data={data} />
+        <DayView dateKey={dateKey} data={data} training={training} />
       ) : view === "week" ? (
         <WeekView
           dateKey={dateKey}
           data={data}
+          training={training}
           onSelectDay={(k) => {
             setDateKey(k);
             setView("day");
@@ -145,6 +148,7 @@ export default function CalendarPage() {
         <MonthView
           dateKey={dateKey}
           data={data}
+          training={training}
           onSelectDay={(k) => {
             setDateKey(k);
             setView("day");

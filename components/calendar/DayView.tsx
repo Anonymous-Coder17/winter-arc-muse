@@ -9,14 +9,18 @@ import { EmptyState, Modal, StateDot } from "@/components/ui";
 import { EventForm, TaskForm } from "./forms";
 import { TodayPanel } from "@/components/today/TodayPanel";
 import { logFor, type CalendarData } from "./useCalendarData";
+import { scheduledWorkoutForDate } from "@/lib/training";
+import type { TrainingData } from "@/components/training/useTraining";
 import type { CalendarEvent, Task } from "@/lib/types";
 
 export function DayView({
   dateKey,
   data,
+  training,
 }: {
   dateKey: string;
   data: CalendarData;
+  training?: TrainingData;
 }) {
   const { tasks, events, habits, habitLogs, refresh } = data;
   const [adding, setAdding] = useState<"task" | "event" | null>(null);
@@ -62,6 +66,11 @@ export function DayView({
   const doneCount = habits.filter(
     (h) => logFor(habitLogs, h.id, dateKey)?.status === "done"
   ).length;
+
+  // Scheduled workout for this date (TodayPanel covers today itself).
+  const scheduled = training
+    ? scheduledWorkoutForDate(training.schedule, training.workouts, dateKey)
+    : null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -176,6 +185,29 @@ export function DayView({
           </div>
         )}
       </section>
+
+      {/* scheduled workout — only on non-today dates; the Today
+          dashboard covers today */}
+      {!isToday(dateKey) && scheduled && (
+        <section aria-label="Scheduled workout">
+          <h3 className="section-title mb-2">Training</h3>
+          <Link
+            href="/training"
+            className="surface card-pad flex items-center gap-3 hover:border-[#7C8CF8]/50 transition-colors"
+          >
+            <span className="w-1 self-stretch rounded-full bg-[#7C8CF8]" aria-hidden />
+            <span className="flex-1 min-w-0">
+              <span className="block text-sm font-medium t-primary">
+                {scheduled.name}
+              </span>
+              <span className="block text-xs t-faint">
+                Scheduled workout · tap to open
+              </span>
+            </span>
+            <span className="text-xs t-faint shrink-0">Open →</span>
+          </Link>
+        </section>
+      )}
 
       {/* habits */}
       <section aria-label="Habits">

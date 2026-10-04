@@ -1,6 +1,8 @@
 "use client";
 
 import { addDays, formatShort, isToday, weekStartMonday } from "@/lib/dates";
+import { scheduledWorkoutForDate } from "@/lib/training";
+import type { TrainingData } from "@/components/training/useTraining";
 import type { CalendarData } from "./useCalendarData";
 
 const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -8,10 +10,12 @@ const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 export function WeekView({
   dateKey,
   data,
+  training,
   onSelectDay,
 }: {
   dateKey: string;
   data: CalendarData;
+  training?: TrainingData;
   onSelectDay: (key: string) => void;
 }) {
   const start = weekStartMonday(dateKey);
@@ -23,6 +27,9 @@ export function WeekView({
         {days.map((d, i) => {
           const items = data.tasks.filter((t) => t.task_date === d).length +
             data.events.filter((e) => e.event_date === d).length;
+          const scheduled = training
+            ? scheduledWorkoutForDate(training.schedule, training.workouts, d)
+            : null;
           const today = isToday(d);
           return (
             <button
@@ -42,8 +49,9 @@ export function WeekView({
               >
                 {Number(d.slice(8))}
               </span>
-              <span className="text-[10px] t-faint h-3">
+              <span className="text-[10px] t-faint h-3 truncate max-w-full">
                 {items > 0 ? `${items} item${items > 1 ? "s" : ""}` : "·"}
+                {scheduled ? ` · ${scheduled.name}` : ""}
               </span>
             </button>
           );
