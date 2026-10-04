@@ -6,6 +6,8 @@ import { createClient } from "@/lib/supabase/client";
 import { getDb } from "@/lib/sync/write";
 import { engine } from "@/lib/sync/engine";
 import { useTheme } from "@/components/theme";
+import { clearCache as clearGoogleMetaCache } from "@/lib/calendar-providers/googleMeta";
+import GoogleCalendarSection from "@/components/settings/GoogleCalendarSection";
 import {
   EmptyState,
   ErrorState,
@@ -209,6 +211,12 @@ export default function SettingsPage() {
   async function logout() {
     // Purge the local shell cache and close the user DB before signing out.
     await engine.handleLogout();
+    // Clear cached Google Calendar metadata so nothing survives logout.
+    try {
+      await clearGoogleMetaCache();
+    } catch {
+      /* best-effort: local-only cache */
+    }
     const supabase = createClient();
     await supabase.auth.signOut();
     router.replace("/login");
@@ -222,7 +230,7 @@ export default function SettingsPage() {
     <div className="flex flex-col gap-4">
       <div>
         <h1 className="page-title">Settings</h1>
-        <p className="page-sub">Appearance, profile, challenge, and data.</p>
+        <p className="page-sub">Appearance, profile, challenge, integrations, and data.</p>
       </div>
 
       {/* appearance */}
@@ -331,6 +339,9 @@ export default function SettingsPage() {
           </>
         )}
       </section>
+
+      {/* google calendar integration */}
+      <GoogleCalendarSection />
 
       {/* data */}
       <section className="surface card-pad" aria-label="Data">
