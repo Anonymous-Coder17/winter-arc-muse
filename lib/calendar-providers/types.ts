@@ -38,6 +38,52 @@ export interface GoogleConnectionState {
   lastCheckedAt: string | null;
 }
 
+/**
+ * V4.3.2 event-sync result (server contract, POST /api/google/sync).
+ *
+ * Mirrors the server's `GoogleSyncResult` shape exactly. Carries counts and
+ * conflict summaries only — never tokens, never raw event payloads.
+ */
+export interface GoogleSyncConflict {
+  localEventId: string | null;
+  title: string;
+  reason: string;
+}
+
+export interface GoogleSyncCalendarResult {
+  calendarId: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface GoogleSyncResult {
+  /** ISO timestamp the server stamped on this sync run. */
+  syncedAt: string;
+  imported: number;
+  updated: number;
+  deleted: number;
+  pushed: number;
+  /** Google wins concurrent edits; each conflict is reported, never silent. */
+  conflicts: GoogleSyncConflict[];
+  /**
+   * True when the server could not push to Google (e.g. insufficient scope):
+   * reads happened, writes did not. The user must reconnect.
+   */
+  writeBlocked: boolean;
+  calendars: GoogleSyncCalendarResult[];
+}
+
+/**
+ * V4.3.2 last-known sync state, read from the local metadata cache
+ * (googleMeta.ts). Offline-safe; "last known", never "just synced".
+ */
+export interface GoogleSyncStatus {
+  lastSyncedAt: string | null;
+  lastResult: GoogleSyncResult | null;
+  /** Local event ids known to have a Google sync mapping (this device). */
+  syncedEventIds: string[];
+}
+
 export interface CalendarProvider {
   /**
    * Current connection state. Writes the metadata cache on success so the
@@ -56,6 +102,25 @@ export interface CalendarProvider {
   setCalendarSelected(calendarId: string, selected: boolean): Promise<void>;
   /** Drop the local metadata cache (e.g. on account switch or logout). */
   clearCache(): Promise<void>;
+  /**
+   * Run a two-way event sync (POST /api/google/sync) and record the result
+   * in the metadata cache. Error mapping mirrors the rest of the port:
+   * offline -> ProviderOfflineError, 401 revoked -> ProviderRevokedError,
+   * 401 otherwise -> ProviderNotSignedInError, 409 -> ProviderError
+   * ("not_connected"), other non-2xx -> ProviderError ("http_<status>").
+   */
+  syncEvents(timeZone: string): Promise<GoogleSyncResult>;
+  /**
+   * Last-known sync state from the metadata cache. Cache-only: never throws
+   * offline; returns nulls/empties when nothing is cached yet.
+   */
+  getSyncStatus(): Promise<GoogleSyncStatus>;
+  /**
+   * Link a local event to one of the user's SELECTED Google calendars so a
+   * later sync pushes it (POST /api/google/mappings). On success the event
+   * id is added to the cached synced-id set.
+   */
+  createEventMapping(localEventId: string, googleCalendarId: string): Promise<void>;
 }
 
 /** Base error for provider failures. `code` is machine-readable. */

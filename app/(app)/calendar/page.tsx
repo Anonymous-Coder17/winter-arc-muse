@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useCalendarData } from "@/components/calendar/useCalendarData";
 import { useTraining } from "@/components/training/useTraining";
 import { DayView } from "@/components/calendar/DayView";
@@ -10,9 +10,16 @@ import { PlanTomorrow } from "@/components/calendar/PlanTomorrow";
 import { EmptyState, ErrorState, LoadingBlock, SegControl } from "@/components/ui";
 import { addDays, formatLong, isToday, todayKey } from "@/lib/dates";
 import { challengeDayNumber, daysRemaining } from "@/lib/types";
+import { engine } from "@/lib/sync/engine";
+import { GoogleCalendarProvider } from "@/lib/calendar-providers/google";
+import { triggerGoogleSync } from "@/lib/calendar-providers/googleSyncClient";
+import { readMetaCache } from "@/lib/calendar-providers/googleMeta";
 import Link from "next/link";
 
 type View = "day" | "week" | "month";
+
+/** Re-sync at most this often when the calendar page opens. */
+const AUTO_SYNC_STALE_MS = 15 * 60 * 1000;
 
 function rangeFor(view: View, dateKey: string): [string, string] {
   if (view === "day") return [addDays(dateKey, -1), addDays(dateKey, 2)];
@@ -31,6 +38,47 @@ export default function CalendarPage() {
   );
   const data = useCalendarData(startKey, endKey);
   const training = useTraining(startKey, endKey);
+
+  // V4.3.2: auto-sync Google events when the page opens — only when Google
+  // is connected (lightweight meta-cache check), the device is online, and
+  // the last sync is missing or older than 15 minutes. Best-effort: the
+  // calendar opens fine even if this never runs.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await engine.whenReady();
+        if (cancelled) return;
+        const userId = engine.getSnapshot().userId;
+        if (!userId) return;
+        if (typeof navigator !== "undefined" && navigator.onLine === false) {
+          return;
+        }
+        const meta = await readMetaCache(userId);
+        if (cancelled || meta?.status !== "connected") return;
+        const provider = new GoogleCalendarProvider(
+          undefined,
+          () => engine.getSnapshot().userId
+        );
+        const sync = await provider.getSyncStatus();
+        const last = sync.lastSyncedAt ? Date.parse(sync.lastSyncedAt) : NaN;
+        if (
+          !sync.lastSyncedAt ||
+          Number.isNaN(last) ||
+          Date.now() - last > AUTO_SYNC_STALE_MS
+        ) {
+          await triggerGoogleSync(provider);
+          // The engine pull bumps the sync tick, so useCalendarData reloads
+          // (and re-tags synced events) on its own.
+        }
+      } catch {
+        // Auto-sync is best-effort; never break the calendar over it.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const challenge = data.challenge;
   const dayNumber =

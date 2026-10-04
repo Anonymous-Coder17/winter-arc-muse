@@ -10,17 +10,20 @@ import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 export const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 
 /**
- * Scopes requested during the OAuth consent flow. Read-only foundation for
- * V4.3.1 (listing the user's calendars).
+ * Scopes requested during the OAuth consent flow. calendar.readonly powers
+ * calendar listing; calendar.events powers the V4.3.2 two-way event sync
+ * (create/update/delete on the user's selected calendars).
  *
- * Deliberate future expansion path: when the event-sync phase lands, add
- * "https://www.googleapis.com/auth/calendar.events" to this list and re-run
- * the consent flow — Google requires re-consent whenever new scopes are
- * requested, so the callback already stores the granted scope set per
- * connection and the refresh logic re-uses whatever was granted.
+ * Re-consent upgrades: adding a scope requires the user to go through the
+ * consent flow again — prompt=consent is already set in buildAuthUrl, so a
+ * reconnect always re-asks and upgrades the stored grant. Existing
+ * connections keep working read-only until the user reconnects: the sync
+ * engine checks the stored scopes per connection and skips the push phase
+ * (writeBlocked=true) when calendar.events was not granted.
  */
 export const GOOGLE_CALENDAR_SCOPES = [
   "https://www.googleapis.com/auth/calendar.readonly",
+  "https://www.googleapis.com/auth/calendar.events",
 ];
 
 /** RFC 4648 base64url without padding. */

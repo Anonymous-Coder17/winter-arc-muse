@@ -16,6 +16,10 @@ export type {
   GoogleCalendarInfo,
   GoogleConnectionState,
   GoogleConnectionStatus,
+  GoogleSyncCalendarResult,
+  GoogleSyncConflict,
+  GoogleSyncResult,
+  GoogleSyncStatus,
 } from "./types";
 export {
   ProviderError,

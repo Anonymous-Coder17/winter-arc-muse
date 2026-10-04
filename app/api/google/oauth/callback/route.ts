@@ -159,6 +159,19 @@ export async function GET(request: Request) {
         .eq("id", existing.id)
         .eq("owner", user.id);
       if (deleteError) persistError = deleteError;
+      // Sync state belongs to the replaced account: drop its event mappings
+      // and incremental sync tokens so nothing leaks into the new
+      // connection. Best-effort; app calendar events are NEVER touched.
+      await supabase
+        .from("google_event_mappings")
+        .delete()
+        .eq("owner", user.id)
+        .eq("google_account_id", existing.google_account_id);
+      await supabase
+        .from("google_calendar_sync_state")
+        .delete()
+        .eq("owner", user.id)
+        .eq("google_account_id", existing.google_account_id);
     }
     if (!persistError) {
       const { error } = await supabase

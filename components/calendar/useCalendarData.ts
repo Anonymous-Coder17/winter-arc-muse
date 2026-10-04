@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getDb } from "@/lib/sync/write";
 import { engine } from "@/lib/sync/engine";
+import {
+  metaCacheAvailable,
+  readSyncMeta,
+} from "@/lib/calendar-providers/googleMeta";
 import { useSyncTick } from "@/components/sync/status";
 import type {
   CalendarEvent,
@@ -71,8 +75,31 @@ export function useCalendarData(startKey: string, endKey: string): CalendarData 
             }),
           ]);
         if (cancelled) return;
+        // V4.3.2: tag events that have a Google sync mapping (local meta
+        // cache — offline-safe). Tagging is non-destructive: untagged rows
+        // keep their exact identity; tagged rows are shallow copies.
+        let syncedIds: Set<string> | null = null;
+        try {
+          const userId = engine.getSnapshot().userId;
+          if (userId && metaCacheAvailable()) {
+            const syncMeta = await readSyncMeta(userId);
+            if (!cancelled && syncMeta && syncMeta.googleSyncedEventIds.length > 0) {
+              syncedIds = new Set(syncMeta.googleSyncedEventIds);
+            }
+          }
+        } catch {
+          // Cache unavailable or corrupt: skip tagging gracefully.
+          syncedIds = null;
+        }
+        if (cancelled) return;
         setTasks(taskRows);
-        setEvents(eventRows);
+        setEvents(
+          syncedIds
+            ? eventRows.map((e) =>
+                syncedIds!.has(e.id) ? { ...e, isGoogleSynced: true } : e
+              )
+            : eventRows
+        );
         setHabits(habitRows);
         setHabitLogs(habitLogRows);
         setChallenge(challengeRows[0] ?? null);
