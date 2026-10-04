@@ -111,6 +111,104 @@ test("middleware does not auth-gate PWA assets", () => {
   );
 });
 
+// The fetch handler never caches authenticated/data responses: the ONLY
+// cache.put call sites are the static-asset branch and the navigation-shell
+// branch, and the code (comments stripped) never names data-layer concepts.
+test("service worker cache.put exists only in the two asset/shell branches", () => {
+  const sw = readFileSync(path.join(PUBLIC, "sw.js"), "utf8");
+  const code = sw
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
+  const puts = code.match(/cache\.put\(/g) || [];
+  assert.equal(puts.length, 2, "expected exactly two cache.put call sites");
+  for (const word of [
+    "supabase",
+    "indexeddb",
+    "mutation",
+    "journal",
+    "workout",
+    "analytics",
+    "habit",
+    "study",
+  ]) {
+    assert.ok(
+      !new RegExp(`\\b${word}\\b`, "i").test(code),
+      "SW code must not reference data concept: " + word
+    );
+  }
+});
+
+// Exactly two cache names exist; every caches.open targets one of them.
+test("service worker has exactly two named caches and no other", () => {
+  const sw = readFileSync(path.join(PUBLIC, "sw.js"), "utf8");
+  const code = sw
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
+  const named = [
+    ...new Set(
+      [...code.matchAll(/"winter-arc-[^"]+"/g)].map((m) => m[0].slice(1, -1))
+    ),
+  ].sort();
+  assert.deepEqual(
+    named,
+    ["winter-arc-shell-v1", "winter-arc-static-v1"],
+    "unexpected cache names: " + named.join(", ")
+  );
+  const opens = code.match(/caches\.open\(/g) || [];
+  assert.equal(opens.length, 2, "expected exactly two caches.open call sites");
+  assert.ok(!/caches\.open\("[^"]+"\)/.test(code), "no literal cache name at open");
+});
+
+// The shell branch's exclusions run before any caching happens: non-GET and
+// cross-origin guards come first, and the /auth/, /api/, non-OK exclusions all
+// precede the shell cache.put within the navigation branch.
+test("shell branch exclusions are ordered ahead of the shell cache write", () => {
+  const sw = readFileSync(path.join(PUBLIC, "sw.js"), "utf8");
+  const shellStart = sw.indexOf("App-shell navigations");
+  assert.ok(shellStart > 0, "shell branch marker missing");
+  // Global guards appear before the shell branch entirely.
+  assert.ok(sw.indexOf('request.method !== "GET"') < shellStart);
+  assert.ok(sw.indexOf("url.origin !== self.location.origin") < shellStart);
+  const shellSection = sw.slice(shellStart);
+  const putIdx = shellSection.indexOf("caches.open(SHELL_CACHE)");
+  assert.ok(putIdx > 0, "shell branch must write to SHELL_CACHE");
+  const authIdx = shellSection.indexOf('startsWith("/auth/")');
+  const apiIdx = shellSection.indexOf('startsWith("/api/")');
+  const navIdx = shellSection.indexOf('request.mode !== "navigate"');
+  const okIdx = shellSection.indexOf("response && response.ok");
+  for (const [name, idx] of [
+    ["/auth/ exclusion", authIdx],
+    ["/api/ exclusion", apiIdx],
+    ["navigate-only guard", navIdx],
+    ["response.ok gate", okIdx],
+  ]) {
+    assert.ok(idx > -1 && idx < putIdx, name + " must precede the shell cache.put");
+  }
+});
+
+// Privacy regression: the cached app shell HTML must carry no personal data.
+// The email rendering and prop were removed so the shell is genuinely generic.
+test("app shell carries no personal data (email privacy regression)", () => {
+  const shell = readFileSync(
+    path.join(ROOT, "components", "shell.tsx"),
+    "utf8"
+  );
+  assert.ok(!/{email}/.test(shell), "shell.tsx must not render {email}");
+  assert.ok(
+    !/\bemail\b/.test(shell),
+    "shell.tsx must not reference email at all (prop removed)"
+  );
+  const layout = readFileSync(
+    path.join(ROOT, "app", "(app)", "layout.tsx"),
+    "utf8"
+  );
+  assert.ok(!/AppShell[^>]*\bemail=/.test(layout), "layout must not pass email to AppShell");
+  assert.ok(!/user\.email/.test(layout), "layout must not read user.email");
+  // Auth guard behavior is unchanged: unauthenticated still redirects.
+  assert.match(layout, /redirect\("\/login"\)/);
+  assert.match(layout, /ensureProfile\(supabase, user\.id\)/);
+});
+
 test("root layout wires manifest, icons, and theme metadata", () => {
   const layout = readFileSync(path.join(ROOT, "app", "layout.tsx"), "utf8");
   assert.match(layout, /manifest\.webmanifest/);
