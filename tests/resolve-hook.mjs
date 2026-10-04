@@ -14,6 +14,16 @@ export async function resolve(specifier, context, next) {
       shortCircuit: true,
     };
   }
+  // Resolve the `@/` tsconfig path alias to the repo root so tests can
+  // import lib modules that use it (e.g. lib/journal.ts).
+  if (specifier.startsWith("@/")) {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const candidate = path.join(repoRoot, specifier.slice(2));
+    const withExt = path.extname(candidate) ? candidate : candidate + ".ts";
+    if (existsSync(withExt)) {
+      return { url: pathToFileURL(withExt).href, shortCircuit: true };
+    }
+  }
   try {
     return await next(specifier, context);
   } catch (err) {
