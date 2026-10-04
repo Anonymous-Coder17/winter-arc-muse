@@ -298,15 +298,7 @@ class SyncEngine {
       this.port = null;
       return;
     }
-    // Crash recovery: mutations stuck in `inflight` go back to pending.
-    const stuck = await this.port.list("_mutations", { eq: { status: "inflight" } });
-    for (const m of stuck) {
-      await this.port.put("_mutations", {
-        ...m,
-        status: "pending",
-        next_retry_at: null,
-      });
-    }
+    await this.resetInflightMutations(this.port);
     const done = await this.metaGet("initial_pull_done");
     if (!done) {
       try {
@@ -320,6 +312,18 @@ class SyncEngine {
     await this.refreshCounts().catch(() => {});
     this.notify();
     this.kick();
+  }
+
+  /** Crash recovery: mutations stuck in `inflight` go back to pending. */
+  private async resetInflightMutations(port: DbPort): Promise<void> {
+    const stuck = await port.list("_mutations", { eq: { status: "inflight" } });
+    for (const m of stuck) {
+      await port.put("_mutations", {
+        ...m,
+        status: "pending",
+        next_retry_at: null,
+      });
+    }
   }
 
   // ------------------------------------------------------------ sync driver
@@ -501,8 +505,10 @@ class SyncEngine {
 
   /** Strip local meta; inserts carry honest client timestamps (the DB trigger
    * only stamps updated_at on UPDATE, so explicit insert values survive). */
-  private sendable(row: Record<string, any>, isInsert: boolean): Record<string, any> {
+  private sendable(row: Record<string, any>, isInsert: boolean, entity?: TableName): Record<string, any> {
     const out = stripLocalMeta({ ...row });
+    // public.profiles has no owner column; never let one reach the remote.
+    if (entity === "profiles") delete out.owner;
     if (isInsert) {
       out.created_at = (row as any)._local_created_at ?? nowIso();
       out.updated_at = (row as any)._local_updated_at ?? nowIso();
@@ -559,7 +565,7 @@ class SyncEngine {
       await this.absorbRemote(port, m.entity, existing);
       return "ok";
     }
-    const created = await R.insert(this.sendable(m.payload, true));
+    const created = await R.insert(this.sendable(m.payload, true, m.entity));
     await this.absorbRemote(port, m.entity, created);
     return "ok";
   }
@@ -574,7 +580,7 @@ class SyncEngine {
     const remote = await R.getById(m.record_id);
     if (!remote) {
       // Deleted on another device; the user's edit wins → re-insert latest state.
-      const created = await R.insert(this.sendable(local, true)).catch(async (e) => {
+      const created = await R.insert(this.sendable(local, true, m.entity)).catch(async (e) => {
         if (classifyRemoteError(e) === "unique") return R.getById(m.record_id);
         throw e;
       });
@@ -588,7 +594,7 @@ class SyncEngine {
     ) {
       // Concurrent remote change: last-write-wins by wall clock.
       if (local._local_updated_at > remote.updated_at) {
-        const updated = await R.updateById(m.record_id, this.sendable(m.payload, false));
+        const updated = await R.updateById(m.record_id, this.sendable(m.payload, false, m.entity));
         await this.absorbRemote(port, m.entity, updated);
         return "ok";
       }
@@ -601,7 +607,7 @@ class SyncEngine {
       );
       return "superseded";
     }
-    const updated = await R.updateById(m.record_id, this.sendable(m.payload, false));
+    const updated = await R.updateById(m.record_id, this.sendable(m.payload, false, m.entity));
     await this.absorbRemote(port, m.entity, updated);
     return "ok";
   }
@@ -612,7 +618,7 @@ class SyncEngine {
     m: Mutation
   ): Promise<Outcome> {
     const cols = m.natural_key_cols ?? [];
-    const payload = this.sendable(m.payload, true);
+    const payload = this.sendable(m.payload, true, m.entity);
     const local = (await port.get(m.entity, m.record_id)) as LocalRow | null;
     if (!local || local._deleted) return "ok";
     const keyVals: Record<string, unknown> = {};
@@ -700,7 +706,7 @@ class SyncEngine {
       );
       const newVal = Number((remote as any)[field] ?? 0) + delta;
       const res = await R.upsertById(
-        this.sendable({ ...stripLocalMeta(remote as Record<string, any>), [field]: newVal }, false)
+        this.sendable({ ...stripLocalMeta(remote as Record<string, any>), [field]: newVal }, false, m.entity)
       );
       await this.absorbRemote(port, m.entity, res);
       return "ok";
@@ -712,7 +718,7 @@ class SyncEngine {
       return "ok";
     }
     const newVal = (rVal ?? base) + delta;
-    const payload = this.sendable({ ...stripLocalMeta(local), [field]: newVal }, !remote);
+    const payload = this.sendable({ ...stripLocalMeta(local), [field]: newVal }, !remote, m.entity);
     const res = remote
       ? cols.length
         ? await R.upsertNatural(payload, cols)
@@ -967,6 +973,11 @@ class SyncEngine {
     }
     await this.refreshCounts();
     this.patchSnap({ lastSyncAt: nowIso() });
+  }
+
+  /** Test-only: run the login crash-recovery pass over the injected port. */
+  async testRecoverInflight(): Promise<void> {
+    if (this.port) await this.resetInflightMutations(this.port);
   }
 
   /** Test-only: full reset. */

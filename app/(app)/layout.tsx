@@ -19,5 +19,5 @@ export default async function AppLayout({
   if (!user) redirect("/login");
   await ensureProfile(supabase, user.id);
 
-  return <AppShell email={user.email ?? ""}>{children}</AppShell>;
+  return <AppShell>{children}</AppShell>;
 }

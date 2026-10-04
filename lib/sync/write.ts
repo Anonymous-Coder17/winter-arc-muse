@@ -240,11 +240,14 @@ const dbImpl: Db = {
     const id = String((row as any).id ?? newUuid());
     // An explicit id matching a tombstone resurrects it instead of duplicating.
     const tombstoned = await port.get(table, id);
-    const full = {
+    const full: Record<string, any> = {
       ...(row as Record<string, any>),
       id,
-      owner: ownerFor(table, row as Record<string, any>, userId),
     };
+    // profiles rows have no owner column (their PK is the user id); ownerFor is
+    // still called so its "requires an explicit id" validation fires.
+    const owner = ownerFor(table, row as Record<string, any>, userId);
+    if (table !== "profiles") full.owner = owner;
     const rec = withMeta(full, 1, 0, (tombstoned ?? undefined) as LocalMeta | undefined);
     await port.put(table, rec);
     if (tombstoned?._deleted) await dropQueuedMutations(port, id, ["delete"]);
@@ -294,12 +297,11 @@ const dbImpl: Db = {
     const existing = await findExisting(port, table, row as Record<string, any>, naturalKey);
     const clean = stripLocalMeta({ ...(row as Record<string, any>) });
     if (existing) {
-      const rec = withMeta(
-        { ...existing, ...clean, id: existing.id },
-        1,
-        0,
-        existing as LocalMeta
-      );
+      const merged: Record<string, any> = { ...existing, ...clean, id: existing.id };
+      // Drop any legacy polluted owner key on profiles rows so they stop
+      // re-emitting an owner column in queued mutations.
+      if (table === "profiles") delete merged.owner;
+      const rec = withMeta(merged, 1, 0, existing as LocalMeta);
       await port.put(table, rec);
       if (existing._deleted) await dropQueuedMutations(port, existing.id, ["delete"]);
       await enqueue(port, userId, {
@@ -314,11 +316,11 @@ const dbImpl: Db = {
       return rec as LocalRow<T>;
     }
     const id = String((row as any).id ?? newUuid());
-    const rec = withMeta(
-      { ...clean, id, owner: ownerFor(table, row as Record<string, any>, userId) },
-      1,
-      0
-    );
+    // profiles rows have no owner column; ownerFor still validates the id.
+    const owner = ownerFor(table, row as Record<string, any>, userId);
+    const fresh: Record<string, any> = { ...clean, id };
+    if (table !== "profiles") fresh.owner = owner;
+    const rec = withMeta(fresh, 1, 0);
     await port.put(table, rec);
     await enqueue(port, userId, {
       entity: table,
@@ -347,13 +349,16 @@ const dbImpl: Db = {
     const existing = id ? await port.get(table, rid) : null;
     if (existing?._deleted) throw new Error("Record not found.");
     const base = Number(existing?.[field] ?? (seedRow as any)[field] ?? 0);
+    // profiles rows have no owner column; ownerFor still validates the id.
+    const owner = ownerFor(table, (existing ?? seedRow) as Record<string, any>, userId);
+    const mergedInc: Record<string, any> = {
+      ...(existing ?? { ...(seedRow as Record<string, any>), id: rid }),
+      id: rid,
+      [field]: base + delta,
+    };
+    if (table !== "profiles") mergedInc.owner = owner;
     const rec = withMeta(
-      {
-        ...(existing ?? { ...(seedRow as Record<string, any>), id: rid }),
-        id: rid,
-        owner: ownerFor(table, (existing ?? seedRow) as Record<string, any>, userId),
-        [field]: base + delta,
-      },
+      mergedInc,
       1,
       0,
       (existing ?? undefined) as LocalMeta | undefined

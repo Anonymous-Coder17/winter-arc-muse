@@ -50,10 +50,8 @@ function NavLink({
 }
 
 export function AppShell({
-  email,
   children,
 }: {
-  email: string;
   children: ReactNode;
 }) {
   useEffect(() => {
@@ -76,9 +74,6 @@ export function AppShell({
         </nav>
         <div className="mt-auto px-2">
           <ConnectivityBadge />
-          <p className="text-xs t-faint truncate mt-2" title={email}>
-            {email}
-          </p>
         </div>
       </aside>
 
