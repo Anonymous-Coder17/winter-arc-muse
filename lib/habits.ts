@@ -1,7 +1,12 @@
 "use client";
 
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import type { Habit } from "@/lib/types";
+
+const HABIT_LOG_KEY = {
+  index: "habit_id_log_date",
+  cols: ["habit_id", "log_date"],
+} as const;
 
 /** Record (or toggle) a habit's completion for a day. Returns the new state. */
 export async function toggleHabitDone(
@@ -9,33 +14,28 @@ export async function toggleHabitDone(
   dateKey: string,
   currentlyDone: boolean
 ): Promise<"done" | "removed"> {
-  const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in.");
+  const db = getDb();
 
   if (currentlyDone) {
     // Un-mark: remove today's log row. Absence = "not recorded".
-    const { error } = await supabase
-      .from("habit_logs")
-      .delete()
-      .eq("habit_id", habit.id)
-      .eq("log_date", dateKey);
-    if (error) throw error;
+    const existing = await db.getByNaturalKey(
+      "habit_logs",
+      { index: HABIT_LOG_KEY.index, cols: [...HABIT_LOG_KEY.cols] },
+      { habit_id: habit.id, log_date: dateKey }
+    );
+    if (existing) await db.remove("habit_logs", existing.id);
     return "removed";
   }
 
-  const { error } = await supabase.from("habit_logs").upsert(
+  await db.upsert(
+    "habit_logs",
     {
-      owner: user.id,
       habit_id: habit.id,
       log_date: dateKey,
       status: "done",
     },
-    { onConflict: "habit_id,log_date" }
+    { index: HABIT_LOG_KEY.index, cols: [...HABIT_LOG_KEY.cols] }
   );
-  if (error) throw error;
   return "done";
 }
 
@@ -44,19 +44,14 @@ export async function markHabitNotDone(
   habit: Habit,
   dateKey: string
 ): Promise<void> {
-  const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in.");
-  const { error } = await supabase.from("habit_logs").upsert(
+  const db = getDb();
+  await db.upsert(
+    "habit_logs",
     {
-      owner: user.id,
       habit_id: habit.id,
       log_date: dateKey,
       status: "not_done",
     },
-    { onConflict: "habit_id,log_date" }
+    { index: HABIT_LOG_KEY.index, cols: [...HABIT_LOG_KEY.cols] }
   );
-  if (error) throw error;
 }

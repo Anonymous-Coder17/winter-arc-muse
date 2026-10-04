@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
+import { engine } from "@/lib/sync/engine";
+import { useSyncTick } from "@/components/sync/status";
 import { addDays } from "@/lib/dates";
 import type {
   AbstinenceIncident,
@@ -64,6 +66,7 @@ export function useRangeData(range: Range | null): RangeDataset {
   const [nonce, setNonce] = useState(0);
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  const tick = useSyncTick();
 
   useEffect(() => {
     if (!range) {
@@ -76,12 +79,8 @@ export function useRangeData(range: Range | null): RangeDataset {
       setLoading(true);
       setError(null);
       try {
-        const supabase = createClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) throw new Error("Not signed in.");
-        const owner = user.id;
+        await engine.whenReady();
+        const db = getDb();
         // Incidents carry timestamptz; bound by the local-day window so
         // attribution matches the rest of the app (see Progress page).
         const incidentFrom = new Date(r.start + "T00:00:00").toISOString();
@@ -90,81 +89,57 @@ export function useRangeData(range: Range | null): RangeDataset {
         ).toISOString();
 
         const [
-          habitsRes,
-          habitLogsRes,
-          incidentsRes,
-          limitsRes,
-          limitLogsRes,
-          sessionsRes,
-          scheduleRes,
-          studyRes,
-          readingRes,
+          habits,
+          habitLogs,
+          incidents,
+          limits,
+          limitLogs,
+          sessions,
+          schedule,
+          studySessions,
+          readingLogs,
         ] = await Promise.all([
-          supabase.from("habits").select("*").eq("owner", owner),
-          supabase
-            .from("habit_logs")
-            .select("*")
-            .eq("owner", owner)
-            .gte("log_date", r.start)
-            .lte("log_date", r.end),
-          supabase
-            .from("abstinence_incidents")
-            .select("*")
-            .eq("owner", owner)
-            .gte("occurred_at", incidentFrom)
-            .lt("occurred_at", incidentTo)
-            .order("occurred_at", { ascending: true })
-            .limit(500),
-          supabase.from("usage_limits").select("*").eq("owner", owner),
-          supabase
-            .from("limit_logs")
-            .select("*")
-            .eq("owner", owner)
-            .gte("log_date", r.start)
-            .lte("log_date", r.end),
-          supabase
-            .from("workout_sessions")
-            .select("*")
-            .eq("owner", owner)
-            .gte("session_date", r.start)
-            .lte("session_date", r.end),
-          supabase.from("training_schedule").select("*").eq("owner", owner),
-          supabase
-            .from("study_sessions")
-            .select("*")
-            .eq("owner", owner)
-            .gte("session_date", r.start)
-            .lte("session_date", r.end),
-          supabase
-            .from("reading_logs")
-            .select("*")
-            .eq("owner", owner)
-            .gte("log_date", r.start)
-            .lte("log_date", r.end),
+          db.list<Habit>("habits"),
+          db.list<HabitLog>("habit_logs", {
+            gte: { log_date: r.start },
+            lte: { log_date: r.end },
+          }),
+          db.list<AbstinenceIncident>("abstinence_incidents", {
+            gte: { occurred_at: incidentFrom },
+            lt: { occurred_at: incidentTo },
+            order: [{ col: "occurred_at", ascending: true }],
+            limit: 500,
+          }),
+          db.list<UsageLimit>("usage_limits"),
+          db.list<LimitLog>("limit_logs", {
+            gte: { log_date: r.start },
+            lte: { log_date: r.end },
+          }),
+          db.list<WorkoutSession>("workout_sessions", {
+            gte: { session_date: r.start },
+            lte: { session_date: r.end },
+          }),
+          db.list<TrainingScheduleRow>("training_schedule"),
+          db.list<StudySession>("study_sessions", {
+            gte: { session_date: r.start },
+            lte: { session_date: r.end },
+          }),
+          db.list<ReadingLog>("reading_logs", {
+            gte: { log_date: r.start },
+            lte: { log_date: r.end },
+          }),
         ]);
         if (cancelled) return;
-        const firstErr = [
-          habitsRes,
-          habitLogsRes,
-          incidentsRes,
-          limitsRes,
-          limitLogsRes,
-          sessionsRes,
-          scheduleRes,
-          studyRes,
-          readingRes,
-        ].find((x) => x.error)?.error;
-        if (firstErr) throw firstErr;
         setData({
-          habits: (habitsRes.data ?? []) as Habit[],
-          habitLogs: (habitLogsRes.data ?? []) as HabitLog[],
-          incidents: (incidentsRes.data ?? []) as AbstinenceIncident[],
-          limits: (limitsRes.data ?? []) as UsageLimit[],
-          limitLogs: (limitLogsRes.data ?? []) as LimitLog[],
-          sessions: (sessionsRes.data ?? []) as WorkoutSession[],
-          schedule: (scheduleRes.data ?? []) as TrainingScheduleRow[],
-          studySessions: (studyRes.data ?? []) as StudySession[],
-          readingLogs: (readingRes.data ?? []) as ReadingLog[],
+          habits,
+          habitLogs,
+          incidents,
+          limits,
+          limitLogs,
+          sessions,
+          schedule,
+          studySessions,
+          readingLogs,
         });
       } catch (e) {
         if (!cancelled)
@@ -178,7 +153,7 @@ export function useRangeData(range: Range | null): RangeDataset {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range?.start, range?.end, nonce]);
+  }, [range?.start, range?.end, nonce, tick]);
 
   return { ...data, loading, error, refresh };
 }

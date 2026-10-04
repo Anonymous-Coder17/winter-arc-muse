@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
+import { engine } from "@/lib/sync/engine";
+import { ConnectivityBadge } from "@/components/sync/status";
 
 const NAV = [
   { href: "/calendar", label: "Calendar", icon: "▦" },
@@ -54,6 +56,9 @@ export function AppShell({
   email: string;
   children: ReactNode;
 }) {
+  useEffect(() => {
+    engine.start();
+  }, []);
   return (
     <div className="min-h-dvh app-bg">
       {/* Desktop: left navigation */}
@@ -70,7 +75,8 @@ export function AppShell({
           ))}
         </nav>
         <div className="mt-auto px-2">
-          <p className="text-xs t-faint truncate" title={email}>
+          <ConnectivityBadge />
+          <p className="text-xs t-faint truncate mt-2" title={email}>
             {email}
           </p>
         </div>
@@ -78,12 +84,15 @@ export function AppShell({
 
       {/* Mobile: compact top header */}
       <header className="md:hidden sticky top-0 z-40 surface-flat border-b hairline-b px-4 py-3 backdrop-blur">
-        <Link href="/calendar" className="flex items-baseline gap-2">
-          <p className="text-base font-semibold t-primary tracking-tight">
-            ❄ Winter Arc
-          </p>
-          <p className="text-[11px] t-secondary">30-Day Transformation</p>
-        </Link>
+        <div className="flex items-center justify-between">
+          <Link href="/calendar" className="flex items-baseline gap-2">
+            <p className="text-base font-semibold t-primary tracking-tight">
+              ❄ Winter Arc
+            </p>
+            <p className="text-[11px] t-secondary">30-Day Transformation</p>
+          </Link>
+          <ConnectivityBadge />
+        </div>
       </header>
 
       {/* Content */}

@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
+import { engine } from "@/lib/sync/engine";
+import { useSyncTick } from "@/components/sync/status";
 import type {
   CalendarEvent,
   Challenge,
@@ -31,64 +33,49 @@ export function useCalendarData(startKey: string, endKey: string): CalendarData 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  const tick = useSyncTick();
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      setLoading(true);
       setError(null);
       try {
-        const supabase = createClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          if (!cancelled) setError("Not signed in.");
-          return;
-        }
-        const [t, e, h, hl, c] = await Promise.all([
-          supabase
-            .from("tasks")
-            .select("*")
-            .gte("task_date", startKey)
-            .lte("task_date", endKey)
-            .order("start_time", { ascending: true, nullsFirst: false }),
-          supabase
-            .from("calendar_events")
-            .select("*")
-            .gte("event_date", startKey)
-            .lte("event_date", endKey)
-            .order("start_time"),
-          supabase
-            .from("habits")
-            .select("*")
-            .eq("owner", user.id)
-            .eq("is_active", true)
-            .order("sort_order"),
-          supabase
-            .from("habit_logs")
-            .select("*")
-            .gte("log_date", startKey)
-            .lte("log_date", endKey),
-          supabase
-            .from("challenges")
-            .select("*")
-            .eq("owner", user.id)
-            .eq("is_active", true)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle(),
-        ]);
+        await engine.whenReady();
+        const db = getDb();
+        const [taskRows, eventRows, habitRows, habitLogRows, challengeRows] =
+          await Promise.all([
+            db.list<Task>("tasks", {
+              gte: { task_date: startKey },
+              lte: { task_date: endKey },
+              order: [{ col: "start_time", ascending: true }],
+            }),
+            db.list<CalendarEvent>("calendar_events", {
+              gte: { event_date: startKey },
+              lte: { event_date: endKey },
+              order: [{ col: "start_time", ascending: true }],
+            }),
+            db.list<Habit>("habits", {
+              eq: { is_active: true },
+              order: [{ col: "sort_order", ascending: true }],
+            }),
+            db.list<HabitLog>("habit_logs", {
+              gte: { log_date: startKey },
+              lte: { log_date: endKey },
+            }),
+            db.list<Challenge>("challenges", {
+              eq: { is_active: true },
+              order: [{ col: "created_at", ascending: false }],
+              limit: 1,
+            }),
+          ]);
         if (cancelled) return;
-        const firstErr = [t, e, h, hl, c].find((r) => r.error)?.error;
-        if (firstErr) throw firstErr;
-        setTasks(t.data ?? []);
-        setEvents(e.data ?? []);
-        setHabits(h.data ?? []);
-        setHabitLogs(hl.data ?? []);
-        setChallenge(c.data ?? null);
+        setTasks(taskRows);
+        setEvents(eventRows);
+        setHabits(habitRows);
+        setHabitLogs(habitLogRows);
+        setChallenge(challengeRows[0] ?? null);
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : "Failed to load data.");
@@ -100,7 +87,7 @@ export function useCalendarData(startKey: string, endKey: string): CalendarData 
     return () => {
       cancelled = true;
     };
-  }, [startKey, endKey, nonce]);
+  }, [startKey, endKey, tick, nonce]);
 
   return useMemo(
     () => ({

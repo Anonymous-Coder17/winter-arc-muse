@@ -1,10 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
+import { engine } from "@/lib/sync/engine";
+import { useSyncTick } from "@/components/sync/status";
+import { addDays } from "@/lib/dates";
 import type {
   AbstinenceIncident,
   AbstinenceRule,
+  JournalEntry,
   LimitLog,
   ReadingLog,
   UsageLimit,
@@ -33,73 +37,56 @@ export function useTodayExtras(dateKey: string): TodayExtras {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  const tick = useSyncTick();
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      setLoading(true);
       setError(null);
       try {
-        const supabase = createClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          if (!cancelled) setError("Not signed in.");
-          return;
-        }
+        await engine.whenReady();
+        const db = getDb();
         const dayStart = new Date(dateKey + "T00:00:00").toISOString();
-        const dayEnd = new Date(dateKey + "T23:59:59").toISOString();
-        const [l, ll, r, inc, rec, rl] = await Promise.all([
-          supabase
-            .from("usage_limits")
-            .select("*")
-            .eq("owner", user.id)
-            .eq("is_active", true)
-            .order("name"),
-          supabase
-            .from("limit_logs")
-            .select("*")
-            .eq("log_date", dateKey),
-          supabase
-            .from("abstinence_rules")
-            .select("*")
-            .eq("owner", user.id)
-            .eq("is_active", true)
-            .order("name"),
-          supabase
-            .from("abstinence_incidents")
-            .select("*")
-            .gte("occurred_at", dayStart)
-            .lte("occurred_at", dayEnd)
-            .order("occurred_at", { ascending: false }),
-          // V3.1: the journal lives in journal_entries now (see lib/journal).
-          // Today only needs to know whether an entry exists for the date —
-          // the text itself stays inside the journal UI.
-          supabase
-            .from("journal_entries")
-            .select("entry_date")
-            .eq("owner", user.id)
-            .eq("entry_date", dateKey)
-            .limit(1),
-          supabase
-            .from("reading_logs")
-            .select("*")
-            .eq("log_date", dateKey),
-        ]);
+        // Incident window is [dayStart, nextDayStart): the old
+        // lte(...T23:59:59) silently dropped the last second of the day.
+        const nextDayStart = new Date(
+          addDays(dateKey, 1) + "T00:00:00"
+        ).toISOString();
+        const [limitRows, limitLogRows, ruleRows, incidentRows, journalRows, readingLogRows] =
+          await Promise.all([
+            db.list<UsageLimit>("usage_limits", {
+              eq: { is_active: true },
+              order: [{ col: "name", ascending: true }],
+            }),
+            db.list<LimitLog>("limit_logs", { eq: { log_date: dateKey } }),
+            db.list<AbstinenceRule>("abstinence_rules", {
+              eq: { is_active: true },
+              order: [{ col: "name", ascending: true }],
+            }),
+            db.list<AbstinenceIncident>("abstinence_incidents", {
+              gte: { occurred_at: dayStart },
+              lt: { occurred_at: nextDayStart },
+              order: [{ col: "occurred_at", ascending: false }],
+            }),
+            // V3.1: the journal lives in journal_entries now (see lib/journal).
+            // Today only needs to know whether an entry exists for the date —
+            // only entry_date values are surfaced into state; the text itself
+            // stays inside the journal UI.
+            db.list<JournalEntry>("journal_entries", {
+              eq: { entry_date: dateKey },
+              limit: 1,
+            }),
+            db.list<ReadingLog>("reading_logs", { eq: { log_date: dateKey } }),
+          ]);
         if (cancelled) return;
-        const firstErr = [l, ll, r, inc, rec, rl].find((x) => x.error)?.error;
-        if (firstErr) throw firstErr;
-        setLimits(l.data ?? []);
-        setLimitLogs(ll.data ?? []);
-        setRules(r.data ?? []);
-        setIncidents(inc.data ?? []);
-        setJournalDates(
-          (rec.data ?? []).map((r) => (r as { entry_date: string }).entry_date)
-        );
-        setReadingLogs(rl.data ?? []);
+        setLimits(limitRows);
+        setLimitLogs(limitLogRows);
+        setRules(ruleRows);
+        setIncidents(incidentRows);
+        setJournalDates(journalRows.map((r) => r.entry_date));
+        setReadingLogs(readingLogRows);
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : "Failed to load.");
@@ -112,7 +99,7 @@ export function useTodayExtras(dateKey: string): TodayExtras {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateKey, nonce]);
+  }, [dateKey, tick, nonce]);
 
   return useMemo(
     () => ({ limits, limitLogs, rules, incidents, journalDates, readingLogs, loading, error, refresh }),

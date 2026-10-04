@@ -1,6 +1,8 @@
 "use client";
 
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
+import { engine } from "@/lib/sync/engine";
+import { seedId } from "@/lib/seed";
 
 // ---- numeric quick-logging for Hifz / Reading ----
 // Finds a count-tracking habit by name (creating it if missing), then adds
@@ -11,57 +13,49 @@ export async function quickLogCount(
   dateKey: string,
   amount: number
 ): Promise<number> {
-  const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in.");
+  const db = getDb();
 
-  let { data: habit, error: hErr } = await supabase
-    .from("habits")
-    .select("*")
-    .eq("owner", user.id)
-    .eq("name", name)
-    .maybeSingle();
-  if (hErr) throw hErr;
+  const habitRows = await db.list("habits", { eq: { name }, limit: 1 });
+  let habit = habitRows[0] ?? null;
 
   if (!habit) {
-    const { data, error } = await supabase
-      .from("habits")
-      .insert({
-        owner: user.id,
+    // Deterministic id: two devices creating the same quick-log habit offline
+    // converge on one row instead of conflicting.
+    const owner = engine.getSnapshot().userId;
+    if (!owner) throw new Error("Not signed in.");
+    habit = await db.upsert(
+      "habits",
+      {
+        id: seedId(owner, "habit", name),
         name,
         description: null,
         tracking: "count",
         frequency: "daily",
         sort_order: 99,
         is_active: true,
-      })
-      .select("*")
-      .single();
-    if (error) throw error;
-    habit = data;
+      },
+      undefined,
+      { tolerance: "drop-on-conflict" }
+    );
   }
 
-  const { data: existing } = await supabase
-    .from("habit_logs")
-    .select("*")
-    .eq("habit_id", habit.id)
-    .eq("log_date", dateKey)
-    .maybeSingle();
-
-  const newValue = (Number(existing?.value ?? 0) || 0) + amount;
-  const { error } = await supabase.from("habit_logs").upsert(
-    {
-      owner: user.id,
-      habit_id: habit.id,
-      log_date: dateKey,
-      status: "done",
-      value: newValue,
-    },
-    { onConflict: "habit_id,log_date" }
+  const existing = await db.getByNaturalKey(
+    "habit_logs",
+    { index: "habit_id_log_date", cols: ["habit_id", "log_date"] },
+    { habit_id: habit.id, log_date: dateKey }
   );
-  if (error) throw error;
+
+  // Additive counter: replays as a delta so concurrent offline quick-logs on
+  // two devices never lose counts.
+  const newValue = (Number(existing?.value ?? 0) || 0) + amount;
+  await db.increment(
+    "habit_logs",
+    existing?.id,
+    "value",
+    amount,
+    { habit_id: habit.id, log_date: dateKey, status: "done", value: 0 },
+    ["habit_id", "log_date"]
+  );
   return newValue;
 }
 
@@ -72,32 +66,21 @@ export async function addLimitMinutes(
   dateKey: string,
   minutes: number
 ): Promise<void> {
-  const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in.");
-
-  const { data: existing } = await supabase
-    .from("limit_logs")
-    .select("*")
-    .eq("limit_id", limitId)
-    .eq("log_date", dateKey)
-    .maybeSingle();
-
-  const newUsed = (existing?.minutes_used ?? 0) + minutes;
-  const { error } = existing
-    ? await supabase
-        .from("limit_logs")
-        .update({ minutes_used: newUsed })
-        .eq("id", existing.id)
-    : await supabase.from("limit_logs").insert({
-        owner: user.id,
-        limit_id: limitId,
-        log_date: dateKey,
-        minutes_used: newUsed,
-      });
-  if (error) throw error;
+  const db = getDb();
+  const existing = (
+    await db.list("limit_logs", {
+      eq: { limit_id: limitId, log_date: dateKey },
+      limit: 1,
+    })
+  )[0];
+  await db.increment(
+    "limit_logs",
+    existing?.id,
+    "minutes_used",
+    minutes,
+    { limit_id: limitId, log_date: dateKey, minutes_used: 0 },
+    ["limit_id", "log_date"]
+  );
 }
 
 // ---- abstinence incidents (recorded data; never resets the challenge) ----
@@ -107,17 +90,11 @@ export async function logIncident(
   trigger: string | null,
   note: string | null
 ): Promise<void> {
-  const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in.");
-  const { error } = await supabase.from("abstinence_incidents").insert({
-    owner: user.id,
+  const db = getDb();
+  await db.insert("abstinence_incidents", {
     rule_id: ruleId,
     occurred_at: new Date().toISOString(),
     trigger: trigger || null,
     note: note || null,
   });
-  if (error) throw error;
 }

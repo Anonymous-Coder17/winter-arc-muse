@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
+import { engine } from "@/lib/sync/engine";
+import { useSyncTick } from "@/components/sync/status";
 import { addDays, todayKey } from "@/lib/dates";
 import type { StudySession, Subject, Topic } from "@/lib/types";
 
@@ -26,6 +28,7 @@ export function useStudy(startKey?: string, endKey?: string): StudyData {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  const tick = useSyncTick();
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
 
@@ -35,42 +38,27 @@ export function useStudy(startKey?: string, endKey?: string): StudyData {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      setLoading(true);
       setError(null);
       try {
-        const supabase = createClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          if (!cancelled) setError("Not signed in.");
-          return;
-        }
-        const [sub, top, ses] = await Promise.all([
-          supabase
-            .from("subjects")
-            .select("*")
-            .eq("owner", user.id)
-            .order("sort_order"),
-          supabase
-            .from("topics")
-            .select("*")
-            .eq("owner", user.id)
-            .order("sort_order"),
-          supabase
-            .from("study_sessions")
-            .select("*")
-            .eq("owner", user.id)
-            .gte("session_date", sKey)
-            .lte("session_date", eKey)
-            .order("started_at", { ascending: false }),
+        await engine.whenReady();
+        const db = getDb();
+        const [subjectRows, topicRows, sessionRows] = await Promise.all([
+          db.list<Subject>("subjects", {
+            order: [{ col: "sort_order", ascending: true }],
+          }),
+          db.list<Topic>("topics", {
+            order: [{ col: "sort_order", ascending: true }],
+          }),
+          db.list<StudySession>("study_sessions", {
+            gte: { session_date: sKey },
+            lte: { session_date: eKey },
+            order: [{ col: "started_at", ascending: false }],
+          }),
         ]);
         if (cancelled) return;
-        const firstErr = [sub, top, ses].find((r) => r.error)?.error;
-        if (firstErr) throw firstErr;
-        setSubjects((sub.data ?? []) as Subject[]);
-        setTopics((top.data ?? []) as Topic[]);
-        setSessions((ses.data ?? []) as StudySession[]);
+        setSubjects(subjectRows);
+        setTopics(topicRows);
+        setSessions(sessionRows);
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : "Failed to load study data.");
@@ -83,7 +71,7 @@ export function useStudy(startKey?: string, endKey?: string): StudyData {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sKey, eKey, nonce]);
+  }, [sKey, eKey, tick, nonce]);
 
   return useMemo(
     () => ({ subjects, topics, sessions, loading, error, refresh }),
