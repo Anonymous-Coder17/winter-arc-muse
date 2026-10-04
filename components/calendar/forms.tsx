@@ -330,6 +330,11 @@ export function EventForm({
           placeholder="Anything worth remembering…"
         />
       </Field>
+      {alreadyMapped && (
+        <p className="text-xs t-faint">
+          This event syncs with Google Calendar.
+        </p>
+      )}
       {!alreadyMapped && gcalCalendars.length > 0 && (
         <Field label="Google Calendar">
           <select
@@ -345,6 +350,10 @@ export function EventForm({
               </option>
             ))}
           </select>
+          <p className="text-xs t-faint mt-1.5">
+            The event is always saved in the app — choosing a calendar also
+            pushes it to Google on the next sync.
+          </p>
         </Field>
       )}
       {error && (

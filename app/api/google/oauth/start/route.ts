@@ -12,6 +12,8 @@ import {
   GCAL_OAUTH_TXN_COOKIE_MAX_AGE_SECONDS,
   getGoogleClientId,
   getRedirectUri,
+  googleNotConfiguredResponse,
+  isGoogleConfigured,
   setOAuthTxnCookie,
 } from "@/lib/google/server";
 
@@ -32,12 +34,9 @@ export async function GET(request: Request) {
   }
 
   const clientId = getGoogleClientId();
-  if (!clientId) {
-    // Deliberately generic: never expose env values or config details.
-    return NextResponse.json(
-      { error: "Google OAuth is not configured on the server." },
-      { status: 500 }
-    );
+  if (!isGoogleConfigured() || !clientId) {
+    // Deliberately generic: never expose env values or which variable is missing.
+    return googleNotConfiguredResponse();
   }
 
   const redirectUri = getRedirectUri(request);

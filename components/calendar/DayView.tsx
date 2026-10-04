@@ -124,11 +124,14 @@ export function DayView({
                   <span className="truncate">{e.title}</span>
                   {e.isGoogleSynced && (
                     <span
-                      className="inline-flex shrink-0"
+                      className="inline-flex items-center gap-1 shrink-0"
                       title="Synced with Google Calendar"
                       aria-label="Synced with Google Calendar"
                     >
                       <StateDot tone="ok" />
+                      <span className="text-[11px] t-faint leading-none">
+                        Google
+                      </span>
                     </span>
                   )}
                 </span>

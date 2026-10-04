@@ -7,6 +7,7 @@ import {
   clearOAuthTxnCookie,
   getRedirectUri,
   getUserConnection,
+  isGoogleConfigured,
   newOAuth2Client,
   readOAuthTxnCookie,
   resolveConnectionAction,
@@ -73,12 +74,14 @@ export async function GET(request: Request) {
   }
 
   const redirectUri = getRedirectUri(request);
-  let client;
-  try {
-    client = newOAuth2Client(redirectUri);
-  } catch {
+  // Single server-side config gate: covers the OAuth client credentials and
+  // the token encryption key (needed below by encryptToken). Deliberately
+  // generic: the settings page shows the same "didn't complete" notice as
+  // any other callback failure, never env details.
+  if (!isGoogleConfigured()) {
     return toSettings("?gcal=error&reason=config");
   }
+  const client = newOAuth2Client(redirectUri);
 
   let tokens;
   try {

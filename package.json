@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "TZ='Asia/Kolkata' node --test --import ./tests/hooks.mjs tests/unit.test.mjs tests/db.test.mjs tests/analytics.test.mjs tests/db_v3.test.mjs tests/db_v3_2.test.mjs tests/pwa.test.mjs tests/sync.test.mjs tests/sync_increment.test.mjs tests/sync_increment_pg.test.mjs tests/migration_0007.test.mjs tests/google_migration.test.mjs tests/google.test.mjs tests/google_oauth_transaction.test.mjs tests/google_migration_0009.test.mjs tests/google_migration_0010.test.mjs tests/google_sync.test.mjs tests/google_roundtrip.test.mjs tests/google_migration_0011.test.mjs tests/google_cross_timezone.test.mjs tests/google_migration_0012.test.mjs",
+    "test": "TZ='Asia/Kolkata' node --test --import ./tests/hooks.mjs tests/unit.test.mjs tests/db.test.mjs tests/analytics.test.mjs tests/db_v3.test.mjs tests/db_v3_2.test.mjs tests/pwa.test.mjs tests/sync.test.mjs tests/sync_increment.test.mjs tests/sync_increment_pg.test.mjs tests/migration_0007.test.mjs tests/google_migration.test.mjs tests/google.test.mjs tests/google_oauth_transaction.test.mjs tests/google_migration_0009.test.mjs tests/google_migration_0010.test.mjs tests/google_sync.test.mjs tests/google_roundtrip.test.mjs tests/google_migration_0011.test.mjs tests/google_cross_timezone.test.mjs tests/google_migration_0012.test.mjs tests/google_ux_states.test.mjs tests/google_config.test.mjs tests/google_a11y.test.mjs",
     "postinstall": "node scripts/generate-pwa-icons.mjs"
   },
   "dependencies": {

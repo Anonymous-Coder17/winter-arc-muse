@@ -3,7 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import { decryptToken } from "@/lib/google/tokenVault";
 import {
   getUserConnection,
+  googleNotConfiguredResponse,
   InvalidGrantError,
+  isGoogleConfigured,
   isInvalidGrant,
   refreshConnectionAccessToken,
 } from "@/lib/google/server";
@@ -27,6 +29,11 @@ export async function GET() {
   } = await supabase.auth.getUser();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (!isGoogleConfigured()) {
+    // Deliberately generic: never expose env values or which variable is missing.
+    return googleNotConfiguredResponse();
   }
 
   const conn = await getUserConnection(supabase, user.id);

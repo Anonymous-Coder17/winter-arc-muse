@@ -59,6 +59,10 @@ function GoogleCalendarSectionInner() {
   const [state, setState] = useState<GoogleConnectionState | null>(null);
   const [offline, setOffline] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Label for the loading state. After an OAuth return the reload is a
+  // "Connecting…" step, not a generic load — the label makes that visible.
+  const [loadingLabel, setLoadingLabel] = useState("Loading…");
+  const pendingLabel = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [nonce, setNonce] = useState(0);
@@ -78,6 +82,10 @@ function GoogleCalendarSectionInner() {
     let cancelled = false;
     async function load() {
       setLoading(true);
+      // Consume a pending label (e.g. "Connecting…" after OAuth) exactly once.
+      const label = pendingLabel.current ?? "Loading…";
+      pendingLabel.current = null;
+      setLoadingLabel(label);
       setError(null);
       try {
         await engine.whenReady();
@@ -130,6 +138,9 @@ function GoogleCalendarSectionInner() {
     if (!gcal) return;
     if (gcal === "connected") {
       setNotice({ kind: "ok", text: "Connected." });
+      // The reload below is the tail of the connect flow — label it so the
+      // loading state reads "Connecting…", not a generic "Loading…".
+      pendingLabel.current = "Connecting…";
       setNonce((n) => n + 1);
     } else if (gcal === "cancelled") {
       setNotice({ kind: "warn", text: "Connection cancelled." });
@@ -203,6 +214,10 @@ function GoogleCalendarSectionInner() {
         err.code === "not_connected"
       ) {
         setNonce((n) => n + 1);
+      } else if (err instanceof ProviderError && err.code === "http_429") {
+        // Temporary throttle from Google. No auto-retry — the user retries
+        // manually, so a 429 can never turn into request spam.
+        setSyncError("rate_limited");
       } else {
         setSyncError(
           err instanceof Error ? err.message : "Sync didn't complete."
@@ -267,10 +282,29 @@ function GoogleCalendarSectionInner() {
     );
   }
 
-  if (loading) return <LoadingBlock />;
+  /** ErrorState announced assertively — a failed load must not be silent. */
+  function renderAlertError(message: string, onRetry?: () => void) {
+    return (
+      <div role="alert">
+        <ErrorState message={message} onRetry={onRetry} />
+      </div>
+    );
+  }
+
+  if (loading)
+    return (
+      <div role="status">
+        <LoadingBlock label={loadingLabel} />
+      </div>
+    );
   if (error && !state)
-    return <ErrorState message={error} onRetry={() => setNonce((n) => n + 1)} />;
-  if (!state) return <LoadingBlock />;
+    return renderAlertError(error, () => setNonce((n) => n + 1));
+  if (!state)
+    return (
+      <div role="status">
+        <LoadingBlock label={loadingLabel} />
+      </div>
+    );
 
   const status = state.status;
 
@@ -291,6 +325,9 @@ function GoogleCalendarSectionInner() {
   } else if (status === "revoked" || syncWriteBlocked) {
     syncTone = "warn";
     syncLabel = "Reconnect required";
+  } else if (syncError === "rate_limited") {
+    syncTone = "warn";
+    syncLabel = "Sync paused — try again in a bit";
   } else if (syncError) {
     syncTone = "bad";
     syncLabel = "Sync failed";
@@ -325,11 +362,13 @@ function GoogleCalendarSectionInner() {
 
       {status === "connected" && (
         <>
-          <div className="flex items-center gap-2 mb-4">
+          <div className="flex items-center gap-2 mb-4 flex-wrap">
             <StateDot tone="ok" />
             <span className="text-sm font-medium t-primary">Connected</span>
             {state.email && (
-              <span className="text-sm t-secondary">{state.email}</span>
+              <span className="text-sm t-secondary break-all">
+                {state.email}
+              </span>
             )}
           </div>
 
@@ -356,17 +395,31 @@ function GoogleCalendarSectionInner() {
               Last synced:{" "}
               {sync?.lastSyncedAt ? timeAgo(sync.lastSyncedAt) : "Never"}
             </p>
-            {syncError && syncError !== "offline" && (
+            {syncError === "rate_limited" && (
               <p
-                className="text-sm text-red-500 dark:text-red-400 mt-2"
+                className="text-sm text-amber-600 dark:text-amber-400 mt-2"
                 role="alert"
               >
-                Sync didn&apos;t complete.{" "}
+                Google is temporarily limiting requests. Waiting a moment,
+                then trying again usually works.{" "}
                 <button className="underline" onClick={() => void runSync()}>
                   Try again
                 </button>
               </p>
             )}
+            {syncError &&
+              syncError !== "offline" &&
+              syncError !== "rate_limited" && (
+                <p
+                  className="text-sm text-red-500 dark:text-red-400 mt-2"
+                  role="alert"
+                >
+                  Sync didn&apos;t complete.{" "}
+                  <button className="underline" onClick={() => void runSync()}>
+                    Try again
+                  </button>
+                </p>
+              )}
             {syncConflicts.length > 0 && (
               <div
                 className="mt-3 rounded-xl bg-amber-500/10 px-3 py-2.5"
@@ -416,20 +469,24 @@ function GoogleCalendarSectionInner() {
                   key={cal.id}
                   className="flex items-center justify-between gap-3 rounded-xl px-3 py-2 hover:bg-black/5 dark:hover:bg-white/5"
                 >
-                  <span className="text-sm t-primary flex items-baseline gap-2">
-                    {cal.summary}
+                  <span className="text-sm t-primary flex items-baseline gap-2 min-w-0 flex-1">
+                    <span className="truncate">{cal.summary}</span>
                     {cal.primary && (
-                      <span className="text-xs t-faint">Primary</span>
+                      <span className="text-xs t-faint shrink-0">Primary</span>
                     )}
                   </span>
                   <button
-                    className={`seg-btn !min-h-[36px] ${
+                    className={`seg-btn !min-h-[36px] shrink-0 whitespace-nowrap disabled:opacity-50 ${
                       cal.selected ? "seg-btn-active" : ""
                     }`}
                     disabled={togglingId !== null}
                     onClick={() => onToggleCalendar(cal)}
                     aria-pressed={cal.selected}
-                    aria-label={`${cal.selected ? "Exclude" : "Include"} ${cal.summary}`}
+                    aria-label={
+                      togglingId === cal.id
+                        ? `Updating ${cal.summary}…`
+                        : `${cal.selected ? "Exclude" : "Include"} ${cal.summary}`
+                    }
                   >
                     {togglingId === cal.id
                       ? "…"
@@ -446,6 +503,8 @@ function GoogleCalendarSectionInner() {
             className="btn-danger"
             onClick={onDisconnect}
             disabled={disconnecting}
+            aria-live="polite"
+            aria-describedby="gcal-disconnect-note"
           >
             {disconnecting
               ? "Disconnecting…"
@@ -453,9 +512,9 @@ function GoogleCalendarSectionInner() {
                 ? "Tap again to confirm"
                 : "Disconnect"}
           </button>
-          <p className="text-xs t-faint mt-2">
-            Disconnecting removes the connection only. Your app events and
-            Google events are never deleted.
+          <p id="gcal-disconnect-note" className="text-xs t-faint mt-2">
+            Disconnecting removes the connection only — your app events stay,
+            and nothing is deleted from Google. You can reconnect anytime.
           </p>
         </>
       )}
@@ -478,12 +537,11 @@ function GoogleCalendarSectionInner() {
         </>
       )}
 
-      {status === "error" && (
-        <ErrorState
-          message="Google Calendar ran into a problem. You can try again, or reconnect below."
-          onRetry={() => setNonce((n) => n + 1)}
-        />
-      )}
+      {status === "error" &&
+        renderAlertError(
+          "Google Calendar ran into a problem. You can try again, or reconnect below.",
+          () => setNonce((n) => n + 1)
+        )}
 
       {offline && (
         <p className="text-xs t-faint mt-3">

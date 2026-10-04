@@ -5,6 +5,10 @@ import {
   RevokedError,
   runGoogleSync,
 } from "@/lib/google/eventSync";
+import {
+  googleNotConfiguredResponse,
+  isGoogleConfigured,
+} from "@/lib/google/server";
 
 export const runtime = "nodejs";
 
@@ -37,6 +41,11 @@ export async function POST(request: Request) {
       { error: "timeZone is required." },
       { status: 400 }
     );
+  }
+
+  if (!isGoogleConfigured()) {
+    // Deliberately generic: never expose env values or which variable is missing.
+    return googleNotConfiguredResponse();
   }
 
   try {

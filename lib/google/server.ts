@@ -42,6 +42,37 @@ export function getGoogleClientSecret(): string | undefined {
 }
 
 /**
+ * True only when every Google Calendar credential is present and non-empty:
+ * GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_TOKEN_ENCRYPTION_KEY.
+ *
+ * Server-side only. Never reveals which value is missing and never carries
+ * secret values — route clients to GOOGLE_NOT_CONFIGURED_MESSAGE instead.
+ */
+export function isGoogleConfigured(): boolean {
+  return Boolean(
+    getGoogleClientId() &&
+      getGoogleClientSecret() &&
+      env("GOOGLE_TOKEN_ENCRYPTION_KEY")
+  );
+}
+
+/**
+ * The single, secret-free message every /api/google route returns when the
+ * integration is not configured. It never names the missing variable and
+ * never carries secret values.
+ */
+export const GOOGLE_NOT_CONFIGURED_MESSAGE =
+  "Google Calendar integration is not configured on this server.";
+
+/** 500 JSON response carrying only the generic not-configured message. */
+export function googleNotConfiguredResponse(): NextResponse {
+  return NextResponse.json(
+    { error: GOOGLE_NOT_CONFIGURED_MESSAGE },
+    { status: 500 }
+  );
+}
+
+/**
  * Redirect URI for the OAuth flow: GOOGLE_REDIRECT_URI when explicitly
  * configured, otherwise <request origin>/api/google/oauth/callback. The
  * callback route resolves this the same way so Google's exact-match check
