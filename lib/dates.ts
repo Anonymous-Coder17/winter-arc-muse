@@ -73,3 +73,30 @@ export function timeLabel(t: string | null): string {
   const h12 = h % 12 === 0 ? 12 : h % 12;
   return `${h12}:${String(m).padStart(2, "0")} ${suffix}`;
 }
+
+/** 0 = Monday … 6 = Sunday for a local day key. */
+export function weekdayIndex(key: string): number {
+  return (parseDayKey(key).getDay() + 6) % 7;
+}
+
+/** "1h 25m", "42m", "18s" — compact human duration from seconds. */
+export function formatDuration(totalSeconds: number): string {
+  const s = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rest = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${rest}s`;
+}
+
+/** "42:17" or "1:02:33" — timer readout from seconds. */
+export function formatHMS(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rest = s % 60;
+  const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
+  const ss = String(rest).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}

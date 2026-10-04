@@ -1,5 +1,6 @@
-// Shared domain types mirroring the Supabase V1 schema.
-// Keep in sync with supabase/migrations/0001_v1_schema.sql.
+// Shared domain types mirroring the Supabase V1 + V2 schema.
+// Keep in sync with supabase/migrations/0001_v1_schema.sql and
+// supabase/migrations/0002_v2_training_study.sql.
 
 export type Appearance = "dark" | "light" | "system";
 
@@ -130,6 +131,102 @@ export interface DailyRecord {
   title: string | null;
   body: string | null;
   minutes: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// V2 — Training: Workout → Exercise → Session → Sets
+// ---------------------------------------------------------------------------
+
+export type WorkoutType = "structured" | "completion";
+
+export interface Workout {
+  id: string;
+  owner: string;
+  name: string;
+  type: WorkoutType;
+  description: string | null;
+  video_ref: string | null;
+  is_active: boolean;
+  sort_order: number;
+}
+
+export type ExerciseType = "reps" | "time";
+
+export interface WorkoutExercise {
+  id: string;
+  owner: string;
+  workout_id: string;
+  name: string;
+  exercise_type: ExerciseType;
+  sort_order: number;
+  notes: string | null;
+}
+
+export type WorkoutSessionStatus = "in_progress" | "completed" | "cancelled";
+
+export interface WorkoutSession {
+  id: string;
+  owner: string;
+  workout_id: string;
+  session_date: string; // YYYY-MM-DD
+  started_at: string;
+  completed_at: string | null;
+  status: WorkoutSessionStatus;
+  notes: string | null;
+}
+
+export interface WorkoutSet {
+  id: string;
+  owner: string;
+  session_id: string;
+  exercise_id: string;
+  set_number: number;
+  reps: number | null;
+  duration_seconds: number | null;
+  notes: string | null;
+}
+
+/** weekday: 0 = Monday … 6 = Sunday. workout_id null = REST day. */
+export interface TrainingScheduleRow {
+  id: string;
+  owner: string;
+  weekday: number;
+  workout_id: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// V2 — Study: Subject → Topic → Session
+// ---------------------------------------------------------------------------
+
+export interface Subject {
+  id: string;
+  owner: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  sort_order: number;
+}
+
+export interface Topic {
+  id: string;
+  owner: string;
+  subject_id: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  sort_order: number;
+}
+
+export interface StudySession {
+  id: string;
+  owner: string;
+  subject_id: string;
+  topic_id: string | null;
+  session_date: string; // YYYY-MM-DD
+  started_at: string;
+  completed_at: string | null;
+  duration_seconds: number;
+  notes: string | null;
 }
 
 // ---------------------------------------------------------------------------
