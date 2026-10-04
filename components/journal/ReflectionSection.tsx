@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState, ErrorState, LoadingBlock } from "@/components/ui";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import {
   getJournalDates,
   getWeeklyReview,
@@ -115,21 +115,12 @@ export function ReflectionSection({
     setChallengeLoading(true);
     setChallengeError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
-      const { data, error } = await supabase
-        .from("challenges")
-        .select("*")
-        .eq("owner", user.id)
-        .eq("is_active", true)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (error) throw error;
-      setChallenge((data as Challenge | null) ?? null);
+      const rows = await getDb().list<Challenge>("challenges", {
+        eq: { is_active: true },
+        order: [{ col: "created_at", ascending: false }],
+        limit: 1,
+      });
+      setChallenge(rows[0] ?? null);
     } catch (e) {
       setChallengeError(
         e instanceof Error ? e.message : "Could not load the challenge."

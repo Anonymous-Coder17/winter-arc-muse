@@ -2,7 +2,9 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
+import { engine } from "@/lib/sync/engine";
+import { useSyncTick } from "@/components/sync/status";
 import { ErrorState, LoadingBlock } from "@/components/ui";
 import { addDays, todayKey, weekStartMonday } from "@/lib/dates";
 import type {
@@ -82,6 +84,7 @@ function ProgressInner() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  const tick = useSyncTick();
 
   useEffect(() => {
     let cancelled = false;
@@ -89,28 +92,22 @@ function ProgressInner() {
       setLoading(true);
       setError(null);
       try {
-        const supabase = createClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
+        await engine.whenReady();
+        const owner = engine.getSnapshot().userId;
+        if (!owner) {
           if (!cancelled) setError("Not signed in.");
           return;
         }
-        const owner = user.id;
+        const db = getDb();
 
         // Challenge first: the "Challenge" range preset needs its span.
-        const { data: chData, error: chErr } = await supabase
-          .from("challenges")
-          .select("*")
-          .eq("owner", owner)
-          .eq("is_active", true)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (chErr) throw chErr;
+        const chRows = await db.list<Challenge>("challenges", {
+          eq: { owner, is_active: true },
+          order: [{ col: "created_at", ascending: false }],
+          limit: 1,
+        });
         if (cancelled) return;
-        const challengeRow = (chData ?? null) as Challenge | null;
+        const challengeRow = chRows[0] ?? null;
         setChallenge(challengeRow);
 
         const r = computeRange(preset, challengeRow, customStart, customEnd);
@@ -123,143 +120,106 @@ function ProgressInner() {
         const incidentTo = new Date(addDays(today, 1) + "T00:00:00").toISOString();
 
         const [
-          habitsRes,
-          habitLogsRes,
-          rulesRes,
-          incidentsRes,
-          limitsRes,
-          limitLogsRes,
-          workoutsRes,
-          exercisesRes,
-          scheduleRes,
-          sessionsRes,
-          subjectsRes,
-          topicsRes,
-          studySessionsRes,
-          tasksRes,
-          booksRes,
-          readingLogsRes,
-          journalRes,
+          habits,
+          habitLogs,
+          rules,
+          incidents,
+          limits,
+          limitLogs,
+          workouts,
+          exercises,
+          schedule,
+          sessions,
+          subjects,
+          topics,
+          studySessions,
+          tasks,
+          books,
+          readingLogs,
+          journalRows,
         ] = await Promise.all([
-          supabase.from("habits").select("*").eq("owner", owner),
-          supabase
-            .from("habit_logs")
-            .select("*")
-            .eq("owner", owner)
-            .gte("log_date", queryStart)
-            .lte("log_date", today),
-          supabase.from("abstinence_rules").select("*").eq("owner", owner),
-          supabase
-            .from("abstinence_incidents")
-            .select("*")
-            .eq("owner", owner)
-            .gte("occurred_at", incidentFrom)
-            .lt("occurred_at", incidentTo)
-            .order("occurred_at", { ascending: true })
-            .limit(500),
-          supabase.from("usage_limits").select("*").eq("owner", owner),
-          supabase
-            .from("limit_logs")
-            .select("*")
-            .eq("owner", owner)
-            .gte("log_date", queryStart)
-            .lte("log_date", today),
-          supabase.from("workouts").select("*").eq("owner", owner),
-          supabase.from("workout_exercises").select("*").eq("owner", owner),
-          supabase.from("training_schedule").select("*").eq("owner", owner),
-          supabase
-            .from("workout_sessions")
-            .select("*")
-            .eq("owner", owner)
-            .gte("session_date", queryStart)
-            .lte("session_date", today),
-          supabase.from("subjects").select("*").eq("owner", owner),
-          supabase.from("topics").select("*").eq("owner", owner),
-          supabase
-            .from("study_sessions")
-            .select("*")
-            .eq("owner", owner)
-            .gte("session_date", queryStart)
-            .lte("session_date", today),
-          supabase
-            .from("tasks")
-            .select("*")
-            .eq("owner", owner)
-            .gte("task_date", queryStart)
-            .lte("task_date", today),
-          supabase.from("books").select("*").eq("owner", owner),
-          supabase
-            .from("reading_logs")
-            .select("*")
-            .eq("owner", owner)
-            .gte("log_date", queryStart)
-            .lte("log_date", today),
+          db.list<Habit>("habits", { eq: { owner } }),
+          db.list<HabitLog>("habit_logs", {
+            eq: { owner },
+            gte: { log_date: queryStart },
+            lte: { log_date: today },
+          }),
+          db.list<AbstinenceRule>("abstinence_rules", { eq: { owner } }),
+          db.list<AbstinenceIncident>("abstinence_incidents", {
+            eq: { owner },
+            gte: { occurred_at: incidentFrom },
+            lt: { occurred_at: incidentTo },
+            order: [{ col: "occurred_at", ascending: true }],
+            limit: 500,
+          }),
+          db.list<UsageLimit>("usage_limits", { eq: { owner } }),
+          db.list<LimitLog>("limit_logs", {
+            eq: { owner },
+            gte: { log_date: queryStart },
+            lte: { log_date: today },
+          }),
+          db.list<Workout>("workouts", { eq: { owner } }),
+          db.list<WorkoutExercise>("workout_exercises", { eq: { owner } }),
+          db.list<TrainingScheduleRow>("training_schedule", { eq: { owner } }),
+          db.list<WorkoutSession>("workout_sessions", {
+            eq: { owner },
+            gte: { session_date: queryStart },
+            lte: { session_date: today },
+          }),
+          db.list<Subject>("subjects", { eq: { owner } }),
+          db.list<Topic>("topics", { eq: { owner } }),
+          db.list<StudySession>("study_sessions", {
+            eq: { owner },
+            gte: { session_date: queryStart },
+            lte: { session_date: today },
+          }),
+          db.list<Task>("tasks", {
+            eq: { owner },
+            gte: { task_date: queryStart },
+            lte: { task_date: today },
+          }),
+          db.list<Book>("books", { eq: { owner } }),
+          db.list<ReadingLog>("reading_logs", {
+            eq: { owner },
+            gte: { log_date: queryStart },
+            lte: { log_date: today },
+          }),
           // entry_date only — journal TEXT is never loaded for analytics.
-          supabase
-            .from("journal_entries")
-            .select("entry_date")
-            .eq("owner", owner)
-            .gte("entry_date", queryStart)
-            .lte("entry_date", today),
+          db.list<{ entry_date: string }>("journal_entries", {
+            eq: { owner },
+            gte: { entry_date: queryStart },
+            lte: { entry_date: today },
+          }),
         ]);
         if (cancelled) return;
 
-        const sessions = (sessionsRes.data ?? []) as WorkoutSession[];
         const sessionIds = sessions.map((s) => s.id);
-        const setsRes =
-          sessionIds.length > 0
-            ? await supabase
-                .from("workout_sets")
-                .select("*")
-                .eq("owner", owner)
-                .in("session_id", sessionIds)
-            : { data: [] as WorkoutSet[], error: null };
+        const sets = await db.list<WorkoutSet>("workout_sets", {
+          eq: { owner },
+          in: { session_id: sessionIds },
+        });
         if (cancelled) return;
-
-        const firstErr = [
-          habitsRes,
-          habitLogsRes,
-          rulesRes,
-          incidentsRes,
-          limitsRes,
-          limitLogsRes,
-          workoutsRes,
-          exercisesRes,
-          scheduleRes,
-          sessionsRes,
-          setsRes,
-          subjectsRes,
-          topicsRes,
-          studySessionsRes,
-          tasksRes,
-          booksRes,
-          readingLogsRes,
-          journalRes,
-        ].find((x) => x.error)?.error;
-        if (firstErr) throw firstErr;
 
         setData({
           challenge: challengeRow,
-          habits: (habitsRes.data ?? []) as Habit[],
-          habitLogs: (habitLogsRes.data ?? []) as HabitLog[],
-          rules: (rulesRes.data ?? []) as AbstinenceRule[],
-          incidents: (incidentsRes.data ?? []) as AbstinenceIncident[],
-          limits: (limitsRes.data ?? []) as UsageLimit[],
-          limitLogs: (limitLogsRes.data ?? []) as LimitLog[],
-          workouts: (workoutsRes.data ?? []) as Workout[],
-          exercises: (exercisesRes.data ?? []) as WorkoutExercise[],
+          habits,
+          habitLogs,
+          rules,
+          incidents,
+          limits,
+          limitLogs,
+          workouts,
+          exercises,
           sessions,
-          sets: (setsRes.data ?? []) as WorkoutSet[],
-          schedule: (scheduleRes.data ?? []) as TrainingScheduleRow[],
-          subjects: (subjectsRes.data ?? []) as Subject[],
-          topics: (topicsRes.data ?? []) as Topic[],
-          studySessions: (studySessionsRes.data ?? []) as StudySession[],
-          tasks: (tasksRes.data ?? []) as Task[],
-          books: (booksRes.data ?? []) as Book[],
-          readingLogs: (readingLogsRes.data ?? []) as ReadingLog[],
-          journalDates: ((journalRes.data ?? []) as { entry_date: string }[]).map(
-            (j) => j.entry_date
-          ),
+          sets,
+          schedule,
+          subjects,
+          topics,
+          studySessions,
+          tasks,
+          books,
+          readingLogs,
+          journalDates: journalRows.map((j) => j.entry_date),
         });
       } catch (err) {
         if (!cancelled)
@@ -272,7 +232,7 @@ function ProgressInner() {
     return () => {
       cancelled = true;
     };
-  }, [preset, customStart, customEnd, nonce]);
+  }, [preset, customStart, customEnd, nonce, tick]);
 
   if (loading) return <LoadingBlock label="Loading progress…" />;
   if (error)

@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
+import { engine } from "@/lib/sync/engine";
 import { useTheme } from "@/components/theme";
 import {
   EmptyState,
@@ -38,38 +40,27 @@ function ChallengeForm({
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
+      await engine.whenReady();
+      const userId = engine.getSnapshot().userId;
+      if (!userId) throw new Error("Not signed in.");
+      const db = getDb();
+      const patch = {
+        title: title.trim(),
+        subtitle: subtitle.trim() || null,
+        start_date: startDate,
+        duration_days: Number(duration),
+      };
       if (initial) {
-        const { error } = await supabase
-          .from("challenges")
-          .update({
-            title: title.trim(),
-            subtitle: subtitle.trim() || null,
-            start_date: startDate,
-            duration_days: Number(duration),
-          })
-          .eq("id", initial.id);
-        if (error) throw error;
+        await db.update("challenges", initial.id, patch);
       } else {
         // One active challenge at a time: deactivate any existing ones.
-        await supabase
-          .from("challenges")
-          .update({ is_active: false })
-          .eq("owner", user.id)
-          .eq("is_active", true);
-        const { error } = await supabase.from("challenges").insert({
-          owner: user.id,
-          title: title.trim(),
-          subtitle: subtitle.trim() || null,
-          start_date: startDate,
-          duration_days: Number(duration),
-          is_active: true,
+        const active = await db.list<Challenge>("challenges", {
+          eq: { owner: userId, is_active: true },
         });
-        if (error) throw error;
+        await Promise.all(
+          active.map((c) => db.update("challenges", c.id, { is_active: false }))
+        );
+        await db.insert("challenges", { ...patch, is_active: true });
       }
       onSaved();
     } catch (err) {
@@ -152,32 +143,35 @@ export default function SettingsPage() {
       setLoading(true);
       setError(null);
       try {
-        const supabase = createClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
+        await engine.whenReady();
+        const userId = engine.getSnapshot().userId;
+        if (!userId) {
           if (!cancelled) setError("Not signed in.");
           return;
         }
-        setEmail(user.email ?? "");
+        // Email comes from the auth session (the sync layer only carries the
+        // id). Best-effort: must not break the offline settings view.
+        try {
+          const {
+            data: { user },
+          } = await createClient().auth.getUser();
+          if (!cancelled) setEmail(user?.email ?? "");
+        } catch {
+          /* offline: email stays blank, local data still loads */
+        }
+        const db = getDb();
         const [p, c] = await Promise.all([
-          supabase.from("profiles").select("*").eq("id", user.id).maybeSingle(),
-          supabase
-            .from("challenges")
-            .select("*")
-            .eq("owner", user.id)
-            .eq("is_active", true)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle(),
+          db.get<Profile>("profiles", userId),
+          db.list<Challenge>("challenges", {
+            eq: { owner: userId, is_active: true },
+            order: [{ col: "created_at", ascending: false }],
+            limit: 1,
+          }),
         ]);
         if (cancelled) return;
-        if (p.error) throw p.error;
-        if (c.error) throw c.error;
-        setProfile(p.data ?? null);
-        setDisplayName(p.data?.display_name ?? "");
-        setChallenge(c.data ?? null);
+        setProfile(p);
+        setDisplayName(p?.display_name ?? "");
+        setChallenge(c[0] ?? null);
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : "Failed to load.");
@@ -196,15 +190,13 @@ export default function SettingsPage() {
     setSavingProfile(true);
     setProfileError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
-      const { error } = await supabase
-        .from("profiles")
-        .upsert({ id: user.id, display_name: displayName.trim() || null });
-      if (error) throw error;
+      await engine.whenReady();
+      const userId = engine.getSnapshot().userId;
+      if (!userId) throw new Error("Not signed in.");
+      await getDb().upsert<Profile>("profiles", {
+        id: userId,
+        display_name: displayName.trim() || null,
+      });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
@@ -215,6 +207,8 @@ export default function SettingsPage() {
   }
 
   async function logout() {
+    // Purge the local shell cache and close the user DB before signing out.
+    await engine.handleLogout();
     const supabase = createClient();
     await supabase.auth.signOut();
     router.replace("/login");

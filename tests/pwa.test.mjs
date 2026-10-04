@@ -64,10 +64,41 @@ test("service worker only caches immutable same-origin static assets", () => {
   assert.match(sw, /request\.method !== "GET"/);
   assert.match(sw, /url\.origin !== self\.location\.origin/);
   assert.match(sw, /startsWith\("\/_next\/static\/"\)/);
-  // The fetch handler must bail out before caching for anything else:
-  // exactly one cache.put call site, inside the static-asset branch.
-  const puts = sw.match(/cache\.put\(/g) || [];
-  assert.equal(puts.length, 1, "expected a single cache.put call site");
+  // The static-asset branch keeps its single cache.put call site.
+  const staticSection = sw.slice(0, sw.indexOf("App-shell navigations"));
+  const puts = staticSection.match(/cache\.put\(/g) || [];
+  assert.equal(puts.length, 1, "expected a single cache.put in the static branch");
+  assert.match(sw, /winter-arc-static-v1/);
+});
+
+test("service worker shell cache stays conservative (V4.2 offline shell)", () => {
+  const sw = readFileSync(path.join(PUBLIC, "sw.js"), "utf8");
+  // Separate, explicitly named cache — never mixed with static assets.
+  assert.match(sw, /winter-arc-shell-v1/);
+  assert.ok(
+    sw.indexOf("winter-arc-shell-v1") !== sw.indexOf("winter-arc-static-v1"),
+    "shell cache must be a distinct cache name"
+  );
+  // Navigations only: the shell branch bails for non-navigate requests.
+  assert.match(sw, /request\.mode !== "navigate"/);
+  // Auth callbacks and API routes are never cached.
+  assert.match(sw, /startsWith\("\/auth\/"\)/);
+  assert.match(sw, /startsWith\("\/api\/"\)/);
+  // Only OK responses are stored (no redirects / errors).
+  const okPuts = sw.match(/response && response\.ok/g) || [];
+  assert.equal(okPuts.length, 2, "both cache branches must gate on response.ok");
+  // Activate preserves exactly the two known caches.
+  assert.match(sw, /key !== STATIC_CACHE && key !== SHELL_CACHE/);
+  // An offline fallback page exists for never-cached navigations.
+  assert.match(sw, /offlineFallback/);
+});
+
+test("logout purges the cached app shell (no cross-account shell reuse)", () => {
+  const engine = readFileSync(path.join(ROOT, "lib", "sync", "engine.ts"), "utf8");
+  assert.match(engine, /caches\.delete/, "engine must purge the shell cache on logout/switch");
+  const types = readFileSync(path.join(ROOT, "lib", "sync", "types.ts"), "utf8");
+  assert.match(types, /winter-arc-shell-v1/);
+  assert.match(engine, /SHELL_CACHE/);
 });
 
 test("middleware does not auth-gate PWA assets", () => {

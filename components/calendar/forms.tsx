@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import { Field } from "@/components/ui";
 import type { Task, TaskKind, TaskState } from "@/lib/types";
 
@@ -46,13 +46,8 @@ export function TaskForm({
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
+      const db = getDb();
       const row = {
-        owner: user.id,
         title: title.trim(),
         task_date: showDateField ? taskDate : dateKey,
         start_time: start || null,
@@ -61,10 +56,8 @@ export function TaskForm({
         state,
         notes: notes.trim() || null,
       };
-      const { error } = initial
-        ? await supabase.from("tasks").update(row).eq("id", initial.id)
-        : await supabase.from("tasks").insert(row);
-      if (error) throw error;
+      if (initial) await db.update("tasks", initial.id, row);
+      else await db.insert("tasks", row);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save task.");
@@ -77,12 +70,8 @@ export function TaskForm({
     if (!initial) return;
     setBusy(true);
     try {
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("tasks")
-        .delete()
-        .eq("id", initial.id);
-      if (error) throw error;
+      const db = getDb();
+      await db.remove("tasks", initial.id);
       onDeleted?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not delete task.");
@@ -216,26 +205,16 @@ export function EventForm({
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
+      const db = getDb();
       const row = {
-        owner: user.id,
         title: title.trim(),
         event_date: dateKey,
         start_time: start,
         end_time: end,
         notes: notes.trim() || null,
       };
-      const { error } = initial
-        ? await supabase
-            .from("calendar_events")
-            .update(row)
-            .eq("id", initial.id)
-        : await supabase.from("calendar_events").insert(row);
-      if (error) throw error;
+      if (initial) await db.update("calendar_events", initial.id, row);
+      else await db.insert("calendar_events", row);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save event.");
@@ -248,12 +227,8 @@ export function EventForm({
     if (!initial) return;
     setBusy(true);
     try {
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("calendar_events")
-        .delete()
-        .eq("id", initial.id);
-      if (error) throw error;
+      const db = getDb();
+      await db.remove("calendar_events", initial.id);
       onDeleted?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not delete event.");

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import { Field } from "@/components/ui";
 import type { Habit, HabitTracking } from "@/lib/types";
 
@@ -38,13 +38,8 @@ export function HabitForm({
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
+      const db = getDb();
       const row = {
-        owner: user.id,
         name: name.trim(),
         description: description.trim() || null,
         tracking,
@@ -56,10 +51,8 @@ export function HabitForm({
         preferred_time: preferredTime || null,
         is_active: isActive,
       };
-      const { error } = initial
-        ? await supabase.from("habits").update(row).eq("id", initial.id)
-        : await supabase.from("habits").insert({ ...row, sort_order: 0 });
-      if (error) throw error;
+      if (initial) await db.update("habits", initial.id, row);
+      else await db.insert("habits", { ...row, sort_order: 0 });
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save habit.");
@@ -72,12 +65,8 @@ export function HabitForm({
     if (!initial) return;
     setBusy(true);
     try {
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("habits")
-        .delete()
-        .eq("id", initial.id);
-      if (error) throw error;
+      const db = getDb();
+      await db.remove("habits", initial.id);
       onDeleted?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not delete habit.");

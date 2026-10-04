@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { addDays, formatLong } from "@/lib/dates";
 import { Field, Modal } from "@/components/ui";
+import { getDb } from "@/lib/sync/write";
 import { TaskForm } from "./forms";
 import type { CalendarData } from "./useCalendarData";
 import type { Habit } from "@/lib/types";
@@ -33,21 +34,18 @@ export function PlanTomorrow({
   useEffect(() => {
     let cancelled = false;
     async function loadHabits() {
-      const { createClient } = await import("@/lib/supabase/client");
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data: rows } = await supabase
-        .from("habits")
-        .select("*")
-        .eq("owner", user.id)
-        .order("sort_order")
-        .order("name");
-      if (!cancelled && rows) setAllHabits(rows);
+      const db = getDb();
+      const rows = await db.list<Habit>("habits", {
+        order: [
+          { col: "sort_order", ascending: true },
+          { col: "name", ascending: true },
+        ],
+      });
+      if (!cancelled) setAllHabits(rows);
     }
-    loadHabits();
+    loadHabits().catch(() => {
+      /* not signed in — habit planning stays hidden */
+    });
     return () => {
       cancelled = true;
     };
@@ -66,13 +64,8 @@ export function PlanTomorrow({
     if (habitBusy) return;
     setHabitBusy(true);
     try {
-      const { createClient } = await import("@/lib/supabase/client");
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("habits")
-        .update({ is_active: !isActive })
-        .eq("id", habitId);
-      if (error) throw error;
+      const db = getDb();
+      await db.update("habits", habitId, { is_active: !isActive });
       setAllHabits((prev) =>
         prev.map((h) =>
           h.id === habitId ? { ...h, is_active: !isActive } : h
@@ -92,20 +85,13 @@ export function PlanTomorrow({
     setNoteBusy(true);
     setNoteError(null);
     try {
-      const { createClient } = await import("@/lib/supabase/client");
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
-      const { error } = await supabase.from("daily_records").insert({
-        owner: user.id,
+      const db = getDb();
+      await db.insert("daily_records", {
         record_date: tomorrow,
         kind: "note",
         title: "Plan note",
         body: note.trim(),
       });
-      if (error) throw error;
       setSaved(true);
       setNote("");
       refresh();

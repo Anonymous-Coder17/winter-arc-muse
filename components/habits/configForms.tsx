@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import { Field } from "@/components/ui";
 import { todayKey } from "@/lib/dates";
 import type { AbstinenceRule, UsageLimit } from "@/lib/types";
@@ -34,25 +34,15 @@ export function AbstinenceRuleForm({
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
+      const db = getDb();
       const row = {
-        owner: user.id,
         name: name.trim(),
         notes: notes.trim() || null,
         start_date: startDate,
         is_active: isActive,
       };
-      const { error } = initial
-        ? await supabase
-            .from("abstinence_rules")
-            .update(row)
-            .eq("id", initial.id)
-        : await supabase.from("abstinence_rules").insert(row);
-      if (error) throw error;
+      if (initial) await db.update("abstinence_rules", initial.id, row);
+      else await db.insert("abstinence_rules", row);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save rule.");
@@ -65,12 +55,8 @@ export function AbstinenceRuleForm({
     if (!initial) return;
     setBusy(true);
     try {
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("abstinence_rules")
-        .delete()
-        .eq("id", initial.id);
-      if (error) throw error;
+      const db = getDb();
+      await db.remove("abstinence_rules", initial.id);
       onDeleted?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not delete rule.");
@@ -172,21 +158,14 @@ export function UsageLimitForm({
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
+      const db = getDb();
       const row = {
-        owner: user.id,
         name: name.trim(),
         daily_limit_min: Number(dailyLimit),
         is_active: isActive,
       };
-      const { error } = initial
-        ? await supabase.from("usage_limits").update(row).eq("id", initial.id)
-        : await supabase.from("usage_limits").insert(row);
-      if (error) throw error;
+      if (initial) await db.update("usage_limits", initial.id, row);
+      else await db.insert("usage_limits", row);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save limit.");
@@ -199,12 +178,8 @@ export function UsageLimitForm({
     if (!initial) return;
     setBusy(true);
     try {
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("usage_limits")
-        .delete()
-        .eq("id", initial.id);
-      if (error) throw error;
+      const db = getDb();
+      await db.remove("usage_limits", initial.id);
       onDeleted?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not delete limit.");

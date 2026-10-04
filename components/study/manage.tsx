@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import { Field, Modal } from "@/components/ui";
 import { topicsFor } from "./useStudy";
 import type { Subject, Topic } from "@/lib/types";
@@ -31,21 +31,14 @@ export function SubjectForm({
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not signed in.");
+      const db = getDb();
       const payload = {
-        owner: user.id,
         name: name.trim(),
         description: description.trim() || null,
         is_active: isActive,
       };
-      const { error } = initial
-        ? await supabase.from("subjects").update(payload).eq("id", initial.id)
-        : await supabase.from("subjects").insert(payload);
-      if (error) throw error;
+      if (initial) await db.update("subjects", initial.id, payload);
+      else await db.insert("subjects", payload);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save subject.");
@@ -111,15 +104,6 @@ export function TopicManager({
 
   const list = topicsFor(topics, subject.id);
 
-  async function authed() {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) throw new Error("Not signed in.");
-    return { supabase, user };
-  }
-
   async function saveTopic() {
     const n = name.trim();
     if (!n) {
@@ -129,25 +113,19 @@ export function TopicManager({
     setBusy(true);
     setError(null);
     try {
-      const { supabase, user } = await authed();
+      const db = getDb();
       if (editing) {
-        const { error } = await supabase
-          .from("topics")
-          .update({
-            name: n,
-            description: description.trim() || null,
-          })
-          .eq("id", editing.id);
-        if (error) throw error;
+        await db.update("topics", editing.id, {
+          name: n,
+          description: description.trim() || null,
+        });
       } else {
-        const { error } = await supabase.from("topics").insert({
-          owner: user.id,
+        await db.insert("topics", {
           subject_id: subject.id,
           name: n,
           description: description.trim() || null,
           sort_order: list.length + 1,
         });
-        if (error) throw error;
       }
       setName("");
       setDescription("");
@@ -163,12 +141,8 @@ export function TopicManager({
   async function toggleActive(t: Topic) {
     setBusy(true);
     try {
-      const { supabase } = await authed();
-      const { error } = await supabase
-        .from("topics")
-        .update({ is_active: !t.is_active })
-        .eq("id", t.id);
-      if (error) throw error;
+      const db = getDb();
+      await db.update("topics", t.id, { is_active: !t.is_active });
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update topic.");

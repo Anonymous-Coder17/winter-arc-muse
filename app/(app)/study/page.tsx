@@ -7,7 +7,7 @@ import {
   LoadingBlock,
   Modal,
 } from "@/components/ui";
-import { createClient } from "@/lib/supabase/client";
+import { getDb } from "@/lib/sync/write";
 import { useStudy } from "@/components/study/useStudy";
 import { SubjectModal, TopicManager } from "@/components/study/manage";
 import { ManualStudyForm, StudyTimer } from "@/components/study/timer";
@@ -27,12 +27,8 @@ export default function StudyPage() {
     setBusy(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("subjects")
-        .update({ is_active: !s.is_active })
-        .eq("id", s.id);
-      if (error) throw error;
+      const db = getDb();
+      await db.update("subjects", s.id, { is_active: !s.is_active });
       data.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update subject.");
