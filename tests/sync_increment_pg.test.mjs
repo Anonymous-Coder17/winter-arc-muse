@@ -334,13 +334,36 @@ test("pg: RLS isolation", async () => {
   assert.equal(rb.applied, true);
   assert.equal(Number(rb.row.value), 5);
 
-  // B reuses A's mutation id from test 2: already applied (ledger is global),
-  // but A's row is invisible to B and B has no row for this natural key ->
-  // applied=false, row null
+  // B reuses A's mutation id from test 2 with B's own seed: mutation identity
+  // is (owner_id, mutation_id), so this is an INDEPENDENT identity -- applied
+  // for B, never mistaken for A's already-applied mutation and never dropped.
   const reuseSeed = { habit_id: habitB, log_date: "2026-10-13", status: "done" };
-  const reuse = await apply(uuid(1), "habit_logs", uuid(29), "value", 5, reuseSeed);
-  assert.equal(reuse.applied, false);
-  assert.equal(reuse.row, null);
+  const reuseRec = uuid(29);
+  const reuse = await apply(uuid(1), "habit_logs", reuseRec, "value", 5, reuseSeed);
+  assert.equal(reuse.applied, true, "cross-owner same id applies independently");
+  assert.equal(reuse.row.id, reuseRec);
+  assert.equal(Number(reuse.row.value), 5, "B's delta applied to B's row");
+  // B's retry of the same identity is exactly-once.
+  const reuseRetry = await apply(uuid(1), "habit_logs", reuseRec, "value", 5, reuseSeed);
+  assert.equal(reuseRetry.applied, false, "B's retry is idempotent");
+  assert.equal(Number(reuseRetry.row.value), 5);
+  // The ledger holds two independent identities for the one mutation id.
+  // RLS hides A's row from B, so B sees only their own identity here; the
+  // A-side check below confirms A's identity is intact and untouched.
+  const ledgerB = (
+    await q(`select owner_id from sync_applied_mutations where mutation_id = $1::uuid`, [
+      uuid(1),
+    ])
+  ).rows.map((r) => r.owner_id);
+  assert.deepEqual(ledgerB, [B]);
+  await asUser(A);
+  const ledgerACount = (
+    await q(`select count(*)::int as n from sync_applied_mutations where mutation_id = $1::uuid`, [
+      uuid(1),
+    ])
+  ).rows[0].n;
+  assert.equal(ledgerACount, 1, "A's own identity for the mutation id is intact");
+  await asUser(B);
 
   // B cannot see A's ledger rows at all
   const seen = await q(`select owner_id from sync_applied_mutations`);
