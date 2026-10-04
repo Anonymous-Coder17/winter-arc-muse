@@ -4,7 +4,7 @@ Two-way sync between the app's own calendar and the user's Google Calendar(s).
 
 > **Status: real end-to-end verification has NOT been performed.** No Google
 > Cloud credentials exist for this project yet. The OAuth flow, token vault,
-> sync engine, and timezone round-trips are covered by 343 automated tests
+> sync engine, and timezone round-trips are covered by 386 automated tests
 > (mocked Google API responses) and a clean typecheck/lint/build — but the
 > live handshake against Google's servers has never run. Do not treat this
 > integration as production-proven until the walkthrough in
@@ -154,9 +154,19 @@ project still owes itself.
   id, scoped to `/api/google/oauth/callback`, httpOnly, 10-minute TTL.
 - Owner identity always comes from the Supabase session user id, never from
   the client; RLS restricts all Google tables to the owner.
-- Disconnect revokes the grant at Google (best-effort) and deletes
-  connections, selections, sync state, and mappings. **App calendar events
-  are never deleted by disconnect or reconnect.**
-- One Google account per app user: connecting a different Google account
-  revokes and replaces the old connection (its selections cascade; sync
-  state and mappings for the old account are dropped).
+- Disconnect revokes the grant at Google (best-effort) and deletes the
+  connection, calendar selections, and any pending OAuth transactions.
+  **App calendar events are never deleted by disconnect or reconnect.**
+  The event mappings (`google_event_mappings`) and incremental sync cursors
+  (`google_calendar_sync_state`) are intentionally **retained** after
+  disconnect, so reconnecting the *same* Google account resumes
+  synchronization using the existing mappings instead of creating duplicate
+  events. They contain no credentials — only sync metadata.
+- Reconnecting the **same** Google account updates the existing connection
+  in place and reuses the retained mappings, so no duplicate events are
+  created and no duplicate integration records appear.
+- One Google account per app user: connecting a **different** Google account
+  revokes and replaces the old connection (its selections cascade; the old
+  account's mappings and sync state are dropped so nothing leaks into the
+  new account). A different account never inherits another account's
+  mappings.
