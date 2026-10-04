@@ -3,11 +3,21 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { engine } from "@/lib/sync/engine";
-import { getCalendarProvider } from "@/lib/calendar-providers";
-import { readMetaCache } from "@/lib/calendar-providers/googleMeta";
+import { GoogleCalendarProvider } from "@/lib/calendar-providers/google";
+import { triggerGoogleSync } from "@/lib/calendar-providers/googleSyncClient";
+import {
+  readMetaCache,
+  writeSyncMeta,
+} from "@/lib/calendar-providers/googleMeta";
 import type {
   GoogleCalendarInfo,
   GoogleConnectionState,
+  GoogleSyncStatus,
+} from "@/lib/calendar-providers/types";
+import {
+  ProviderError,
+  ProviderOfflineError,
+  ProviderRevokedError,
 } from "@/lib/calendar-providers/types";
 import {
   EmptyState,
@@ -16,9 +26,32 @@ import {
   StateDot,
 } from "@/components/ui";
 
-const provider = getCalendarProvider("google");
+/**
+ * Wired with the app user id so the provider can write the metadata cache
+ * (connection state + V4.3.2 sync state). The resolver is lazy — it reads the
+ * engine snapshot at call time, never at module load.
+ */
+const provider = new GoogleCalendarProvider(
+  undefined,
+  () => engine.getSnapshot().userId
+);
 
 type Notice = { kind: "ok" | "warn" | "error"; text: string } | null;
+
+/** Calm relative time for "Last synced": "just now", "5 minutes ago", … */
+function timeAgo(iso: string): string {
+  const ms = Date.now() - Date.parse(iso);
+  if (Number.isNaN(ms)) return "unknown";
+  if (ms < 60_000) return "just now";
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  return new Date(iso).toLocaleDateString();
+}
 
 function GoogleCalendarSectionInner() {
   const router = useRouter();
@@ -32,6 +65,12 @@ function GoogleCalendarSectionInner() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [disconnectArmed, setDisconnectArmed] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  // V4.3.2 event sync.
+  const [sync, setSync] = useState<GoogleSyncStatus | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const syncingRef = useRef(false);
+  const syncDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const armedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Connection status: live first, last-known cache when offline.
@@ -63,6 +102,13 @@ function GoogleCalendarSectionInner() {
         }
         setOffline(wasOffline);
         setState(next);
+        // Last-known sync state (cache-only; cheap and offline-safe).
+        try {
+          const s = await provider.getSyncStatus();
+          if (!cancelled) setSync(s);
+        } catch {
+          // The sync panel falls back to "Not synced yet".
+        }
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : "Failed to load.");
@@ -74,6 +120,7 @@ function GoogleCalendarSectionInner() {
     return () => {
       cancelled = true;
       if (armedTimer.current) clearTimeout(armedTimer.current);
+      if (syncDebounce.current) clearTimeout(syncDebounce.current);
     };
   }, [nonce]);
 
@@ -113,12 +160,76 @@ function GoogleCalendarSectionInner() {
             }
           : s
       );
+      // The selection changed what sync covers — re-sync shortly after.
+      if (syncDebounce.current) clearTimeout(syncDebounce.current);
+      syncDebounce.current = setTimeout(() => {
+        void runSync();
+      }, 1500);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Could not update the calendar."
       );
     } finally {
       setTogglingId(null);
+    }
+  }
+
+  /**
+   * V4.3.2 sync flow: engine push -> Google sync -> engine pull. The shared
+   * triggerGoogleSync guards against overlapping runs; syncingRef guards the
+   * button UI on top of it.
+   */
+  async function runSync() {
+    if (syncingRef.current) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setSyncError("offline");
+      return;
+    }
+    syncingRef.current = true;
+    setSyncing(true);
+    setSyncError(null);
+    try {
+      await triggerGoogleSync(provider);
+      const s = await provider.getSyncStatus();
+      setSync(s);
+    } catch (err) {
+      if (err instanceof ProviderRevokedError) {
+        // Reload connection state so the revoked branch renders.
+        setNonce((n) => n + 1);
+      } else if (err instanceof ProviderOfflineError) {
+        setSyncError("offline");
+      } else if (
+        err instanceof ProviderError &&
+        err.code === "not_connected"
+      ) {
+        setNonce((n) => n + 1);
+      } else {
+        setSyncError(
+          err instanceof Error ? err.message : "Sync didn't complete."
+        );
+      }
+    } finally {
+      syncingRef.current = false;
+      setSyncing(false);
+    }
+  }
+
+  /** Dismiss the conflict notice: clears conflicts from the cached result. */
+  async function dismissConflicts() {
+    const uid = engine.getSnapshot().userId;
+    if (!uid) return;
+    try {
+      const s = await provider.getSyncStatus();
+      if (!s.lastResult) return;
+      const cleared = { ...s.lastResult, conflicts: [] };
+      await writeSyncMeta(uid, {
+        lastGoogleSyncAt: s.lastSyncedAt,
+        lastGoogleSyncResult: cleared,
+        googleSyncedEventIds: s.syncedEventIds,
+      });
+      setSync({ ...s, lastResult: cleared });
+    } catch {
+      // Dismissal is cosmetic; a failed write just leaves the notice up.
     }
   }
 
@@ -163,6 +274,34 @@ function GoogleCalendarSectionInner() {
 
   const status = state.status;
 
+  // V4.3.2 sync status line (shown in the connected branch below).
+  const syncResult = sync?.lastResult ?? null;
+  const syncConflicts = syncResult?.conflicts ?? [];
+  const syncWriteBlocked = !!syncResult?.writeBlocked;
+  const liveOffline =
+    typeof navigator !== "undefined" && navigator.onLine === false;
+  let syncTone: "ok" | "warn" | "bad" | "idle";
+  let syncLabel: string;
+  if (syncing) {
+    syncTone = "idle";
+    syncLabel = "Syncing…";
+  } else if (offline || liveOffline || syncError === "offline") {
+    syncTone = "warn";
+    syncLabel = "Offline — changes will sync when connected";
+  } else if (status === "revoked" || syncWriteBlocked) {
+    syncTone = "warn";
+    syncLabel = "Reconnect required";
+  } else if (syncError) {
+    syncTone = "bad";
+    syncLabel = "Sync failed";
+  } else if (sync?.lastSyncedAt) {
+    syncTone = "ok";
+    syncLabel = `Synced ${timeAgo(sync.lastSyncedAt)}`;
+  } else {
+    syncTone = "idle";
+    syncLabel = "Not synced yet";
+  }
+
   return (
     <>
       {renderNotice()}
@@ -175,8 +314,8 @@ function GoogleCalendarSectionInner() {
       {(status === "disconnected" || status === "unknown") && (
         <>
           <p className="text-sm t-secondary mb-4">
-            Connect Google Calendar to choose which calendars will participate
-            in a future integration. Event sync isn&apos;t part of this version.
+            Connect Google Calendar to choose which calendars sync with the
+            app. Events flow both ways once sync runs.
           </p>
           <button className="btn-primary" onClick={() => provider.connect()}>
             Connect Google Calendar
@@ -191,6 +330,77 @@ function GoogleCalendarSectionInner() {
             <span className="text-sm font-medium t-primary">Connected</span>
             {state.email && (
               <span className="text-sm t-secondary">{state.email}</span>
+            )}
+          </div>
+
+          {/* V4.3.2 event sync */}
+          <div className="mb-4 rounded-xl border hairline px-3 py-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <span
+                role="status"
+                aria-live="polite"
+                className="flex items-center gap-2 text-sm"
+              >
+                <StateDot tone={syncTone} />
+                <span className="t-primary font-medium">{syncLabel}</span>
+              </span>
+              <button
+                className="btn-secondary !min-h-[36px]"
+                onClick={() => void runSync()}
+                disabled={syncing || offline || liveOffline}
+              >
+                {syncing ? "Syncing…" : "Sync now"}
+              </button>
+            </div>
+            <p className="text-xs t-faint mt-2">
+              Last synced:{" "}
+              {sync?.lastSyncedAt ? timeAgo(sync.lastSyncedAt) : "Never"}
+            </p>
+            {syncError && syncError !== "offline" && (
+              <p
+                className="text-sm text-red-500 dark:text-red-400 mt-2"
+                role="alert"
+              >
+                Sync didn&apos;t complete.{" "}
+                <button className="underline" onClick={() => void runSync()}>
+                  Try again
+                </button>
+              </p>
+            )}
+            {syncConflicts.length > 0 && (
+              <div
+                className="mt-3 rounded-xl bg-amber-500/10 px-3 py-2.5"
+                role="status"
+              >
+                <p className="text-sm t-primary font-medium mb-1">
+                  Google&apos;s version was kept for these events
+                </p>
+                <ul className="text-sm t-secondary list-disc pl-5 flex flex-col gap-0.5">
+                  {syncConflicts.map((c, i) => (
+                    <li key={`${c.title}-${i}`}>{c.title}</li>
+                  ))}
+                </ul>
+                <button
+                  className="btn-ghost !min-h-[32px] text-xs mt-2"
+                  onClick={() => void dismissConflicts()}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+            {syncWriteBlocked && (
+              <div className="mt-3 rounded-xl bg-amber-500/10 px-3 py-2.5">
+                <p className="text-sm t-secondary">
+                  Reconnect Google Calendar to enable creating and editing
+                  Google events from the app.
+                </p>
+                <button
+                  className="btn-primary !min-h-[36px] mt-2"
+                  onClick={() => provider.connect()}
+                >
+                  Reconnect
+                </button>
+              </div>
             )}
           </div>
 

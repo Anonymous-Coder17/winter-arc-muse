@@ -114,6 +114,12 @@ export interface CalendarEvent {
   start_time: string;
   end_time: string;
   notes: string | null;
+  /**
+   * Client-side tag (V4.3.2): set by useCalendarData when the event has a
+   * Google sync mapping in the local metadata cache. Not a DB column — never
+   * written back to calendar_events.
+   */
+  isGoogleSynced?: boolean;
 }
 
 export type DailyRecordKind =

@@ -1,9 +1,21 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { getDb } from "@/lib/sync/write";
+import { newUuid } from "@/lib/sync/types";
+import { engine } from "@/lib/sync/engine";
 import { Field } from "@/components/ui";
+import { GoogleCalendarProvider } from "@/lib/calendar-providers/google";
+import { triggerGoogleSync } from "@/lib/calendar-providers/googleSyncClient";
+import { readMetaCache } from "@/lib/calendar-providers/googleMeta";
+import type { GoogleCalendarInfo } from "@/lib/calendar-providers/types";
 import type { Task, TaskKind, TaskState } from "@/lib/types";
+
+/** Wired provider for mapping new events to Google (lazy user-id resolver). */
+const gcalProvider = new GoogleCalendarProvider(
+  undefined,
+  () => engine.getSnapshot().userId
+);
 
 const KINDS: { value: TaskKind; label: string }[] = [
   { value: "general", label: "General" },
@@ -198,6 +210,33 @@ export function EventForm({
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // V4.3.2: optional Google push for new events. Shown only when Google is
+  // connected (from the lightweight meta cache — no network on form open)
+  // and the event isn't already mapped (mapped events keep their mapping).
+  const [gcalCalendars, setGcalCalendars] = useState<GoogleCalendarInfo[]>([]);
+  const [gcalChoice, setGcalChoice] = useState<string>("");
+  const alreadyMapped = !!initial?.isGoogleSynced;
+
+  useEffect(() => {
+    if (alreadyMapped) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        await engine.whenReady();
+        const userId = engine.getSnapshot().userId;
+        if (!userId || cancelled) return;
+        const meta = await readMetaCache(userId);
+        if (!cancelled && meta?.status === "connected") {
+          setGcalCalendars(meta.calendars.filter((c) => c.selected));
+        }
+      } catch {
+        // Selector stays hidden; the event is still saved locally.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [alreadyMapped]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -213,8 +252,22 @@ export function EventForm({
         end_time: end,
         notes: notes.trim() || null,
       };
-      if (initial) await db.update("calendar_events", initial.id, row);
-      else await db.insert("calendar_events", row);
+      if (initial) {
+        await db.update("calendar_events", initial.id, row);
+      } else {
+        const id = newUuid();
+        await db.insert("calendar_events", { ...row, id });
+        if (gcalChoice && !alreadyMapped) {
+          try {
+            await gcalProvider.createEventMapping(id, gcalChoice);
+            // Background sync: never blocks the form closing.
+            void triggerGoogleSync(gcalProvider).catch(() => {});
+          } catch {
+            // Mapping failed (offline, revoked…): the event is saved
+            // locally and stays visible; sync can be run from Settings.
+          }
+        }
+      }
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save event.");
@@ -277,6 +330,23 @@ export function EventForm({
           placeholder="Anything worth remembering…"
         />
       </Field>
+      {!alreadyMapped && gcalCalendars.length > 0 && (
+        <Field label="Google Calendar">
+          <select
+            className="input"
+            value={gcalChoice}
+            onChange={(e) => setGcalChoice(e.target.value)}
+          >
+            <option value="">Local only</option>
+            {gcalCalendars.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.summary}
+                {c.primary ? " (Primary)" : ""}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       {error && (
         <p className="text-sm text-red-500 dark:text-red-400" role="alert">
           {error}

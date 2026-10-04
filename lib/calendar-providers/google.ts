@@ -12,15 +12,25 @@
  * - fetch followed a redirect to /login, or a 401 without a revocation
  *   flag -> ProviderNotSignedInError (the app session is gone).
  * - 401 with `{ revoked: true }` -> ProviderRevokedError.
+ * - 409 from /api/google/sync -> ProviderError with code "not_connected".
  * - other non-2xx -> ProviderError with an `http_<status>` code.
  *
  * After every successful read or mutation the metadata cache (googleMeta.ts)
  * is updated so the UI can render the last-known state while offline.
+ *
+ * V4.3.2: `syncEvents` runs the server-side event sync and records the
+ * result in the cache; `getSyncStatus` reads it back without touching the
+ * network; `createEventMapping` links a local event to a Google calendar.
+ * The synced event-id set is tracked locally from this device's own mapping
+ * calls — the sync contract carries no event ids, and no new server route
+ * may be added, so ids learned from other devices are not visible here.
  */
 import type {
   CalendarProvider,
   GoogleCalendarInfo,
   GoogleConnectionState,
+  GoogleSyncResult,
+  GoogleSyncStatus,
 } from "./types";
 import {
   ProviderError,
@@ -30,15 +40,21 @@ import {
 } from "./types";
 import {
   clearMetaCache,
+  emptySyncMeta,
   metaCacheAvailable,
   readMetaCache,
+  readSyncMeta,
   writeMetaCache,
+  writeSyncMeta,
+  type GoogleSyncMeta,
 } from "./googleMeta";
 
 const OAUTH_START = "/api/google/oauth/start";
 const DISCONNECT = "/api/google/oauth/disconnect";
 const CALENDARS = "/api/google/calendars";
 const SELECTIONS = "/api/google/selections";
+const SYNC = "/api/google/sync";
+const MAPPINGS = "/api/google/mappings";
 
 type FetchFn = (
   input: RequestInfo | URL,
@@ -138,6 +154,81 @@ export class GoogleCalendarProvider implements CalendarProvider {
   async clearCache(): Promise<void> {
     const uid = this.userId();
     if (uid) await clearMetaCache(uid);
+  }
+
+  /**
+   * Run a two-way Google event sync (POST /api/google/sync) and record the
+   * result in the metadata cache. The caller's own engine sync should run
+   * before (to push local edits) and after (to pull imported events); see
+   * `triggerGoogleSync` in googleSyncClient.ts.
+   */
+  async syncEvents(timeZone: string): Promise<GoogleSyncResult> {
+    let json: any;
+    try {
+      ({ json } = await this.requestJson(SYNC, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ timeZone }),
+      }));
+    } catch (err) {
+      if (err instanceof ProviderError && err.code === "http_409") {
+        throw new ProviderError(
+          "not_connected",
+          "Google Calendar is not connected"
+        );
+      }
+      throw err;
+    }
+    const result = sanitizeSyncResult(json);
+    await this.recordSyncResult(result);
+    return result;
+  }
+
+  /**
+   * Last-known sync state from the metadata cache. Cache-only: never throws
+   * offline; nulls/empties when nothing has been recorded yet.
+   */
+  async getSyncStatus(): Promise<GoogleSyncStatus> {
+    const uid = this.userId();
+    if (!uid || !metaCacheAvailable()) {
+      return { lastSyncedAt: null, lastResult: null, syncedEventIds: [] };
+    }
+    const sync = await this.safeReadSync(uid);
+    return {
+      lastSyncedAt: sync?.lastGoogleSyncAt ?? null,
+      lastResult: sync?.lastGoogleSyncResult ?? null,
+      syncedEventIds: sync?.googleSyncedEventIds ?? [],
+    };
+  }
+
+  /**
+   * Link a local event to one of the user's SELECTED Google calendars
+   * (POST /api/google/mappings) so the next sync pushes it to Google. On
+   * success the event id joins the cached synced-id set.
+   */
+  async createEventMapping(
+    localEventId: string,
+    googleCalendarId: string
+  ): Promise<void> {
+    await this.requestJson(MAPPINGS, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localEventId, googleCalendarId }),
+    });
+    const uid = this.userId();
+    if (!uid || !metaCacheAvailable()) return;
+    const sync = (await this.safeReadSync(uid)) ?? emptySyncMeta();
+    const ids = new Set(sync.googleSyncedEventIds);
+    ids.add(localEventId);
+    try {
+      await writeSyncMeta(uid, {
+        lastGoogleSyncAt: sync.lastGoogleSyncAt,
+        lastGoogleSyncResult: sync.lastGoogleSyncResult,
+        googleSyncedEventIds: [...ids],
+      });
+    } catch {
+      // Cache write failure must not fail a confirmed server-side mapping.
+    }
   }
 
   // ------------------------------------------------------------------
@@ -294,4 +385,92 @@ export class GoogleCalendarProvider implements CalendarProvider {
       return null;
     }
   }
+
+  private async safeReadSync(uid: string): Promise<GoogleSyncMeta | null> {
+    try {
+      return await readSyncMeta(uid);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Record a completed sync in the metadata cache: last sync time, the full
+   * (sanitized) result, and the existing tracked event ids. Cache failures
+   * never fail the sync itself — the sync happened; only the display cache
+   * is best-effort.
+   */
+  private async recordSyncResult(result: GoogleSyncResult): Promise<void> {
+    const uid = this.userId();
+    if (!uid || !metaCacheAvailable()) return;
+    const prev = (await this.safeReadSync(uid)) ?? emptySyncMeta();
+    try {
+      await writeSyncMeta(uid, {
+        lastGoogleSyncAt: result.syncedAt,
+        lastGoogleSyncResult: result,
+        googleSyncedEventIds: prev.googleSyncedEventIds,
+      });
+    } catch {
+      // Display cache only — the sync result stands on its own.
+    }
+  }
+}
+
+/**
+ * Validate the /api/google/sync response shape before caching it. The
+ * server contract is trusted but the network is not: an unexpected shape is
+ * a hard error, never silently cached.
+ */
+function sanitizeSyncResult(json: unknown): GoogleSyncResult {
+  const fail = (): never => {
+    throw new ProviderError(
+      "bad_sync_response",
+      "The sync response had an unexpected shape."
+    );
+  };
+  if (json === null || typeof json !== "object" || Array.isArray(json)) fail();
+  const r = json as Record<string, unknown>;
+  if (typeof r.syncedAt !== "string") fail();
+  for (const k of ["imported", "updated", "deleted", "pushed"] as const) {
+    if (typeof r[k] !== "number" || !Number.isFinite(r[k]) || (r[k] as number) < 0) fail();
+  }
+  if (typeof r.writeBlocked !== "boolean") fail();
+  if (!Array.isArray(r.conflicts)) fail();
+  const conflicts = (r.conflicts as unknown[]).map((c) => {
+    if (c === null || typeof c !== "object" || Array.isArray(c)) fail();
+    const cc = c as Record<string, unknown>;
+    if (
+      (cc.localEventId !== null && typeof cc.localEventId !== "string") ||
+      typeof cc.title !== "string" ||
+      typeof cc.reason !== "string"
+    ) {
+      fail();
+    }
+    return {
+      localEventId: cc.localEventId as string | null,
+      title: cc.title as string,
+      reason: cc.reason as string,
+    };
+  });
+  if (!Array.isArray(r.calendars)) fail();
+  const calendars = (r.calendars as unknown[]).map((c) => {
+    if (c === null || typeof c !== "object" || Array.isArray(c)) fail();
+    const cc = c as Record<string, unknown>;
+    if (typeof cc.calendarId !== "string" || typeof cc.ok !== "boolean") fail();
+    return {
+      calendarId: cc.calendarId as string,
+      ok: cc.ok as boolean,
+      ...(typeof cc.error === "string" ? { error: cc.error } : {}),
+    };
+  });
+  return {
+    syncedAt: r.syncedAt as string,
+    imported: r.imported as number,
+    updated: r.updated as number,
+    deleted: r.deleted as number,
+    pushed: r.pushed as number,
+    conflicts,
+    writeBlocked: r.writeBlocked as boolean,
+    calendars,
+  };
 }

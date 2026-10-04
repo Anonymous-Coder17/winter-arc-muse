@@ -120,7 +120,18 @@ export function DayView({
                   {timeLabel(e.start_time)}–{timeLabel(e.end_time)}
                 </span>
                 <span className="w-1 self-stretch rounded-full bg-[#7C8CF8]" aria-hidden />
-                <span className="text-sm t-primary flex-1">{e.title}</span>
+                <span className="text-sm t-primary flex-1 flex items-center gap-1.5 min-w-0">
+                  <span className="truncate">{e.title}</span>
+                  {e.isGoogleSynced && (
+                    <span
+                      className="inline-flex shrink-0"
+                      title="Synced with Google Calendar"
+                      aria-label="Synced with Google Calendar"
+                    >
+                      <StateDot tone="ok" />
+                    </span>
+                  )}
+                </span>
                 <span className="text-[11px] t-faint uppercase tracking-wide">
                   Planned
                 </span>
