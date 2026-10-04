@@ -58,7 +58,10 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
+  // PWA assets (sw.js, manifest, icons) must never hit the auth middleware:
+  // the manifest has to be fetchable and the worker installable regardless
+  // of session state.
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|sw\\.js|manifest\\.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
