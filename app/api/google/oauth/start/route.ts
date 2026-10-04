@@ -7,20 +7,21 @@ import {
   newCodeVerifier,
   newOAuthState,
 } from "@/lib/google/oauthCore";
+import { createOAuthTransaction } from "@/lib/google/oauthTransactions";
 import {
-  encodeOAuthCookie,
-  GCAL_OAUTH_COOKIE,
-  GCAL_OAUTH_COOKIE_MAX_AGE_SECONDS,
+  GCAL_OAUTH_TXN_COOKIE_MAX_AGE_SECONDS,
   getGoogleClientId,
   getRedirectUri,
-  isSecureRequest,
+  setOAuthTxnCookie,
 } from "@/lib/google/server";
 
 export const runtime = "nodejs";
 
 // GET /api/google/oauth/start — begins the Google OAuth consent flow.
-// Requires a session. Sets an httpOnly state+PKCE cookie, then redirects the
-// browser to Google's consent screen.
+// Requires a session. Creates a server-side OAuth transaction (state +
+// encrypted PKCE verifier, bound to the session user) and sets an httpOnly
+// cookie holding ONLY the random transaction id, then redirects the browser
+// to Google's consent screen.
 export async function GET(request: Request) {
   const supabase = await createClient();
   const {
@@ -51,22 +52,13 @@ export async function GET(request: Request) {
     scopes: GOOGLE_CALENDAR_SCOPES,
   });
 
+  const txnId = await createOAuthTransaction(supabase, user.id, {
+    state,
+    verifier,
+    ttlSeconds: GCAL_OAUTH_TXN_COOKIE_MAX_AGE_SECONDS,
+  });
+
   const res = NextResponse.redirect(authUrl, 302);
-  res.cookies.set(
-    GCAL_OAUTH_COOKIE,
-    encodeOAuthCookie({
-      state,
-      verifier,
-      userId: user.id,
-      exp: Date.now() + GCAL_OAUTH_COOKIE_MAX_AGE_SECONDS * 1000,
-    }),
-    {
-      httpOnly: true,
-      secure: isSecureRequest(request),
-      sameSite: "lax",
-      path: "/",
-      maxAge: GCAL_OAUTH_COOKIE_MAX_AGE_SECONDS,
-    }
-  );
+  setOAuthTxnCookie(res, txnId, request);
   return res;
 }

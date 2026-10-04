@@ -4,17 +4,31 @@ import { createClient } from "@/lib/supabase/server";
 import { GOOGLE_CALENDAR_SCOPES, validateState } from "@/lib/google/oauthCore";
 import { encryptToken } from "@/lib/google/tokenVault";
 import {
-  clearOAuthCookie,
+  clearOAuthTxnCookie,
   getRedirectUri,
+  getUserConnection,
   newOAuth2Client,
-  readOAuthCookie,
+  readOAuthTxnCookie,
+  resolveConnectionAction,
+  revokeRefreshTokenEnc,
 } from "@/lib/google/server";
+import {
+  consumeOAuthTransaction,
+  deleteOAuthTransaction,
+} from "@/lib/google/oauthTransactions";
 
 export const runtime = "nodejs";
 
 // GET /api/google/oauth/callback — Google redirects here after consent.
-// Validates state, exchanges the code for tokens, stores the encrypted
-// connection, then redirects to /settings with a gcal status flag.
+// Consumes the server-side OAuth transaction (single-use; the transaction
+// row is deleted on consume), validates state, exchanges the code for
+// tokens with the server-held PKCE verifier, then stores the encrypted
+// connection and redirects to /settings with a gcal status flag.
+//
+// The session user is the ONLY identity source: no client-supplied user id
+// is trusted anywhere in this flow. One Google account per app user: when
+// the consented account differs from the linked one, the old connection is
+// revoked and replaced.
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const supabase = await createClient();
@@ -27,27 +41,31 @@ export async function GET(request: Request) {
       `${url.origin}/settings${query}`,
       302
     );
-    clearOAuthCookie(res);
+    clearOAuthTxnCookie(res);
     return res;
   };
 
   if (!user) return toSettings("?gcal=error&reason=auth");
 
-  // User denied consent (or another OAuth-level error) at Google.
+  const txnId = readOAuthTxnCookie(request);
+
+  // User denied consent (or another OAuth-level error) at Google: drop the
+  // transaction so no stale state survives the aborted flow.
   if (url.searchParams.get("error")) {
+    if (txnId) await deleteOAuthTransaction(supabase, user.id, txnId);
     return toSettings("?gcal=cancelled");
   }
 
-  const cookie = readOAuthCookie(request);
   const returnedState = url.searchParams.get("state") ?? "";
   const code = url.searchParams.get("code");
 
-  if (
-    !cookie ||
-    cookie.exp < Date.now() ||
-    cookie.userId !== user.id ||
-    !validateState(cookie.state, returnedState)
-  ) {
+  // Atomic single-use consume. Null means the transaction is missing,
+  // expired, already consumed, or owned by a different user. On success the
+  // row is already deleted, so the id can never be replayed.
+  const txn = txnId
+    ? await consumeOAuthTransaction(supabase, user.id, txnId)
+    : null;
+  if (!txn || !validateState(txn.state, returnedState)) {
     return toSettings("?gcal=error&reason=state");
   }
   if (!code) {
@@ -64,7 +82,7 @@ export async function GET(request: Request) {
 
   let tokens;
   try {
-    const res = await client.getToken({ code, codeVerifier: cookie.verifier });
+    const res = await client.getToken({ code, codeVerifier: txn.verifier });
     tokens = res.tokens;
   } catch {
     return toSettings("?gcal=error&reason=exchange");
@@ -86,20 +104,20 @@ export async function GET(request: Request) {
   }
   if (!googleAccountId) return toSettings("?gcal=error&reason=userinfo");
 
-  // Select-then-insert-or-update via the user's own client (RLS is owner-only;
-  // uniqueness is on (owner, google_account_id)).
-  const { data: existing } = await supabase
-    .from("google_calendar_connections")
-    .select("id, refresh_token_enc")
-    .eq("owner", user.id)
-    .eq("google_account_id", googleAccountId)
-    .maybeSingle();
+  // One account per user: the decision is pure, the rows are owner-only
+  // (RLS), and uniqueness is enforced by unique(owner) in the database.
+  const existing = await getUserConnection(supabase, user.id);
+  const action = resolveConnectionAction(existing, googleAccountId);
 
   // Google only returns a refresh token on first consent (or when
-  // prompt=consent forces it); on re-consent without one, keep the stored one.
+  // prompt=consent forces it); on re-consent without one, keep the stored
+  // one — but only when updating the SAME account. Across accounts (replace)
+  // or on fresh insert, never carry the old grant over.
   const refreshTokenEnc = tokens.refresh_token
     ? encryptToken(tokens.refresh_token)
-    : (existing?.refresh_token_enc ?? null);
+    : action === "update"
+      ? (existing?.refresh_token_enc ?? null)
+      : null;
   const accessTokenEnc = tokens.access_token
     ? encryptToken(tokens.access_token)
     : null;
@@ -113,7 +131,7 @@ export async function GET(request: Request) {
   const now = new Date().toISOString();
 
   let persistError: unknown = null;
-  if (existing) {
+  if (action === "update" && existing) {
     const { error } = await supabase
       .from("google_calendar_connections")
       .update({
@@ -129,20 +147,35 @@ export async function GET(request: Request) {
       .eq("owner", user.id);
     persistError = error;
   } else {
-    const { error } = await supabase
-      .from("google_calendar_connections")
-      .insert({
-        id: randomUUID(),
-        owner: user.id,
-        google_account_id: googleAccountId,
-        email,
-        status: "connected",
-        scopes,
-        refresh_token_enc: refreshTokenEnc,
-        access_token_enc: accessTokenEnc,
-        token_expires_at: tokenExpiresAt,
-      });
-    persistError = error;
+    if (action === "replace" && existing) {
+      // The consented account differs from the linked one. Best-effort
+      // revoke the old grant, then delete the row — its selections cascade,
+      // so no stale selection can leak into the new connection. App
+      // calendar events are NEVER touched here.
+      await revokeRefreshTokenEnc(existing.refresh_token_enc);
+      const { error: deleteError } = await supabase
+        .from("google_calendar_connections")
+        .delete()
+        .eq("id", existing.id)
+        .eq("owner", user.id);
+      if (deleteError) persistError = deleteError;
+    }
+    if (!persistError) {
+      const { error } = await supabase
+        .from("google_calendar_connections")
+        .insert({
+          id: randomUUID(),
+          owner: user.id,
+          google_account_id: googleAccountId,
+          email,
+          status: "connected",
+          scopes,
+          refresh_token_enc: refreshTokenEnc,
+          access_token_enc: accessTokenEnc,
+          token_expires_at: tokenExpiresAt,
+        });
+      persistError = error;
+    }
   }
   if (persistError) {
     return toSettings("?gcal=error&reason=persist");
