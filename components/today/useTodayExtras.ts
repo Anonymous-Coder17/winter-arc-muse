@@ -5,7 +5,6 @@ import { createClient } from "@/lib/supabase/client";
 import type {
   AbstinenceIncident,
   AbstinenceRule,
-  DailyRecord,
   LimitLog,
   ReadingLog,
   UsageLimit,
@@ -16,7 +15,8 @@ export interface TodayExtras {
   limitLogs: LimitLog[];
   rules: AbstinenceRule[];
   incidents: AbstinenceIncident[];
-  records: DailyRecord[];
+  /** entry_date values only — journal TEXT is never loaded here (privacy). */
+  journalDates: string[];
   readingLogs: ReadingLog[];
   loading: boolean;
   error: string | null;
@@ -28,7 +28,7 @@ export function useTodayExtras(dateKey: string): TodayExtras {
   const [limitLogs, setLimitLogs] = useState<LimitLog[]>([]);
   const [rules, setRules] = useState<AbstinenceRule[]>([]);
   const [incidents, setIncidents] = useState<AbstinenceIncident[]>([]);
-  const [records, setRecords] = useState<DailyRecord[]>([]);
+  const [journalDates, setJournalDates] = useState<string[]>([]);
   const [readingLogs, setReadingLogs] = useState<ReadingLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -75,11 +75,15 @@ export function useTodayExtras(dateKey: string): TodayExtras {
             .gte("occurred_at", dayStart)
             .lte("occurred_at", dayEnd)
             .order("occurred_at", { ascending: false }),
+          // V3.1: the journal lives in journal_entries now (see lib/journal).
+          // Today only needs to know whether an entry exists for the date —
+          // the text itself stays inside the journal UI.
           supabase
-            .from("daily_records")
-            .select("*")
-            .eq("record_date", dateKey)
-            .order("created_at", { ascending: false }),
+            .from("journal_entries")
+            .select("entry_date")
+            .eq("owner", user.id)
+            .eq("entry_date", dateKey)
+            .limit(1),
           supabase
             .from("reading_logs")
             .select("*")
@@ -92,7 +96,9 @@ export function useTodayExtras(dateKey: string): TodayExtras {
         setLimitLogs(ll.data ?? []);
         setRules(r.data ?? []);
         setIncidents(inc.data ?? []);
-        setRecords(rec.data ?? []);
+        setJournalDates(
+          (rec.data ?? []).map((r) => (r as { entry_date: string }).entry_date)
+        );
         setReadingLogs(rl.data ?? []);
       } catch (err) {
         if (!cancelled)
@@ -109,7 +115,7 @@ export function useTodayExtras(dateKey: string): TodayExtras {
   }, [dateKey, nonce]);
 
   return useMemo(
-    () => ({ limits, limitLogs, rules, incidents, records, readingLogs, loading, error, refresh }),
-    [limits, limitLogs, rules, incidents, records, readingLogs, loading, error, refresh]
+    () => ({ limits, limitLogs, rules, incidents, journalDates, readingLogs, loading, error, refresh }),
+    [limits, limitLogs, rules, incidents, journalDates, readingLogs, loading, error, refresh]
   );
 }

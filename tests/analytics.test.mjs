@@ -626,3 +626,204 @@ test("firstFinalAvg windows clamp to short ranges", () => {
     { first: 6, final: 6 }
   );
 });
+
+// ---------------------------------------------------------------------------
+// V3.1: weekly-review and 30-day-comparison integration math
+// (the WeeklySummary / ChallengeComparison components feed these exact
+// engine functions — the numbers below are what the review UI displays)
+// ---------------------------------------------------------------------------
+
+function habitFixture(id, name, created_at) {
+  return {
+    id, owner: "u", name, description: null, tracking: "completion",
+    frequency: "daily", weekly_target: null, preferred_time: null,
+    sort_order: 0, is_active: true, created_at,
+  };
+}
+
+test("V3.1 weekly review: deterministic week computes every summary metric", () => {
+  // Week Mon 2026-09-28 .. Sun 2026-10-04.
+  const week = { start: "2026-09-28", end: "2026-10-04" };
+
+  // Habits: Meditation 7 active days / 5 done; Exercise (created Fri) 3/3.
+  const habits = [
+    habitFixture("h1", "Meditation", "2026-09-01T00:00:00Z"),
+    habitFixture("h2", "Exercise", "2026-10-02T00:00:00Z"),
+  ];
+  const habitLogs = [
+    ...["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02"].map(
+      (d) => log({ habit_id: "h1", log_date: d })
+    ),
+    ...["2026-10-02", "2026-10-03", "2026-10-04"].map((d) =>
+      log({ habit_id: "h2", log_date: d })
+    ),
+  ];
+  const stats = habitConsistency(habits, habitLogs, week);
+  const doneDays = stats.reduce((a, s) => a + s.doneDays, 0);
+  const activeDays = stats.reduce((a, s) => a + s.activeDays, 0);
+  assert.equal(activeDays, 10);
+  assert.equal(doneDays, 8);
+  assert.equal(Math.round((doneDays / activeDays) * 100), 80);
+
+  // Training: 2 planned (Mon/Wed), 2 completed.
+  const schedule = [
+    { id: "s0", owner: "u", weekday: 0, workout_id: "w1" },
+    { id: "s2", owner: "u", weekday: 2, workout_id: "w1" },
+    { id: "s4", owner: "u", weekday: 4, workout_id: null },
+  ];
+  const sessions = [
+    { id: "a", owner: "u", workout_id: "w1", session_date: "2026-09-28", status: "completed" },
+    { id: "b", owner: "u", workout_id: "w1", session_date: "2026-09-30", status: "completed" },
+  ];
+  const [t] = trainingStats(sessions, schedule, week);
+  assert.equal(t.planned, 2);
+  assert.equal(t.completed, 2);
+
+  // Study: 1h + 1.5h + 0.5h = 3h total.
+  const studySessions = [
+    { id: "s1", owner: "u", session_date: "2026-10-01", duration_seconds: 3600 },
+    { id: "s2", owner: "u", session_date: "2026-10-03", duration_seconds: 5400 },
+    { id: "s3", owner: "u", session_date: "2026-10-04", duration_seconds: 1800 },
+  ];
+  const [st] = studyTotals(studySessions, week);
+  assert.equal(st.totalSeconds, 10800);
+
+  // Hifz: 3 + 0 + 10 + 2 = 15 ayahs; 0 is a recorded zero, not missing data.
+  const hifzLogs = [
+    log({ habit_id: "hifz1", log_date: "2026-09-29", value: 3 }),
+    log({ habit_id: "hifz1", log_date: "2026-09-30", value: 0 }),
+    log({ habit_id: "hifz1", log_date: "2026-10-02", value: 10 }),
+    log({ habit_id: "hifz1", log_date: "2026-10-04", value: 2 }),
+  ];
+  const ht = hifzTotals(hifzSeries(hifzLogs, "hifz1", week));
+  assert.equal(ht.total, 15);
+  assert.equal(ht.recordedDays, 4);
+  assert.equal(ht.zeroDays, 1);
+
+  // Reading: 5 + 10 + 20 = 35 pages.
+  const readingLogs = [
+    { log_date: "2026-09-29", pages: 5, book_id: null },
+    { log_date: "2026-10-01", pages: 10, book_id: null },
+    { log_date: "2026-10-03", pages: 20, book_id: null },
+  ];
+  const rt = readingTotals(readingSeries(readingLogs, week));
+  assert.equal(rt.total, 35);
+  assert.equal(rt.recordedDays, 3);
+
+  // Abstinence: exactly 1 incident in the week.
+  const [ig] = abstinenceStats(
+    [{ id: "r1", name: "Instagram" }],
+    [{ rule_id: "r1", occurred_at: "2026-10-02T10:00:00+05:30" }],
+    week
+  );
+  assert.equal(ig.incidents, 1);
+
+  // Limits: 4 of 5 logged days within limit -> 80% compliance.
+  const [yt] = limitCompliance(
+    [{ id: "l1", owner: "u", name: "YouTube", daily_limit_min: 45, is_active: true }],
+    [
+      { id: "a", owner: "u", limit_id: "l1", log_date: "2026-09-28", minutes_used: 30 },
+      { id: "b", owner: "u", limit_id: "l1", log_date: "2026-09-29", minutes_used: 40 },
+      { id: "c", owner: "u", limit_id: "l1", log_date: "2026-09-30", minutes_used: 20 },
+      { id: "d", owner: "u", limit_id: "l1", log_date: "2026-10-01", minutes_used: 45 },
+      { id: "e", owner: "u", limit_id: "l1", log_date: "2026-10-02", minutes_used: 60 },
+    ],
+    week
+  );
+  assert.equal(yt.daysWithin, 4);
+  assert.equal(yt.daysOver, 1);
+  assert.equal(yt.compliancePct, 80);
+});
+
+test("V3.1 30-day comparison: first-7 vs final-7 anchored to the challenge", () => {
+  // Challenge: 2026-09-05 (Sat) .. 2026-10-04 (Sun), 30 days.
+  const challenge = { start: "2026-09-05", end: "2026-10-04" };
+  const d = (n) => {
+    const base = new Date(Date.UTC(2026, 8, 5 + n));
+    return base.toISOString().slice(0, 10);
+  }; // d(0)=day 1 .. d(29)=day 30
+
+  // Study: 1h/day first week, 2h/day final week; day 8 and day 23 are decoys.
+  const studyPts = [];
+  for (let i = 0; i < 7; i++) studyPts.push({ date: d(i), value: 3600 });
+  for (let i = 23; i < 30; i++) studyPts.push({ date: d(i), value: 7200 });
+  studyPts.push({ date: d(7), value: 99999 }); // day 8: in neither window
+  studyPts.push({ date: d(22), value: 88888 }); // day 23: in neither window
+  const study = firstFinalAvg(studyPts, challenge);
+  assert.equal(study.first, 3600);
+  assert.equal(study.final, 7200);
+
+  // Reading: 10 pages/day first week, 20/day final; day-8 decoy excluded.
+  const readPts = [];
+  for (let i = 0; i < 7; i++) readPts.push({ date: d(i), value: 10 });
+  for (let i = 23; i < 30; i++) readPts.push({ date: d(i), value: 20 });
+  readPts.push({ date: d(7), value: 500 });
+  const reading = firstFinalAvg(readPts, challenge);
+  assert.equal(reading.first, 10);
+  assert.equal(reading.final, 20);
+
+  // Hifz: first week 3+0+10+2+5+0+4=24 (avg 24/7); final week 42 (avg 6).
+  // Zeros are recorded data; missing days are simply absent (no zero-fill).
+  const hifzLogs = [
+    ...[3, 0, 10, 2, 5, 0, 4].map((value, i) =>
+      log({ habit_id: "hifz1", log_date: d(i), value })
+    ),
+    ...[10, 10, 5, 8, 4, 3, 2].map((value, i) =>
+      log({ habit_id: "hifz1", log_date: d(23 + i), value })
+    ),
+  ];
+  const hifzPts = hifzSeries(hifzLogs, "hifz1", challenge)
+    .filter((p) => p.value !== null)
+    .map((p) => ({ date: p.date, value: p.value }));
+  const hifz = firstFinalAvg(hifzPts, challenge);
+  assert.ok(Math.abs(hifz.first - 24 / 7) < 1e-9);
+  assert.ok(Math.abs(hifz.final - 6) < 1e-9);
+
+  // Habit consistency: first window 5/7 -> 71%; final window 6/7 -> 86%.
+  const habit = habitFixture("h1", "Meditation", "2026-09-01T00:00:00Z");
+  const firstLogs = ["2026-09-05", "2026-09-06", "2026-09-07", "2026-09-08", "2026-09-09"].map(
+    (log_date) => log({ habit_id: "h1", log_date })
+  );
+  const finalLogs = ["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03"].map(
+    (log_date) => log({ habit_id: "h1", log_date })
+  );
+  const [hsFirst] = habitConsistency([habit], firstLogs, {
+    start: d(0),
+    end: d(6),
+  });
+  const [hsFinal] = habitConsistency([habit], finalLogs, {
+    start: d(23),
+    end: d(29),
+  });
+  assert.equal(hsFirst.pct, 71);
+  assert.equal(hsFinal.pct, 86);
+
+  // Training: 2 completed first week, 3 completed final week.
+  const schedule = [
+    { id: "s0", owner: "u", weekday: 0, workout_id: "w1" },
+    { id: "s2", owner: "u", weekday: 2, workout_id: "w1" },
+  ];
+  const mk = (id, session_date) => ({
+    id, owner: "u", workout_id: "w1", session_date, status: "completed",
+  });
+  const [tFirst] = trainingStats(
+    [mk("a", d(2)), mk("b", d(4))],
+    schedule,
+    { start: d(0), end: d(6) }
+  );
+  const [tFinal] = trainingStats(
+    [mk("c", d(23)), mk("d", d(25)), mk("e", d(27))],
+    schedule,
+    { start: d(23), end: d(29) }
+  );
+  assert.equal(tFirst.completed, 2);
+  assert.equal(tFinal.completed, 3);
+
+  // A day-8 session must not leak into either training window either.
+  const [tFirstLeak] = trainingStats(
+    [mk("a", d(2)), mk("b", d(4)), mk("z", d(7))],
+    schedule,
+    { start: d(0), end: d(6) }
+  );
+  assert.equal(tFirstLeak.completed, 2);
+});

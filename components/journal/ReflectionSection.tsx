@@ -19,6 +19,13 @@ import { JournalEditor } from "./JournalEditor";
 import { DailyReviewForm } from "./DailyReviewForm";
 import { WeeklyReviewForm } from "./WeeklyReviewForm";
 import { ThirtyDayReview } from "./ThirtyDayReview";
+import { useRangeData } from "./useRangeData";
+import {
+  ChallengeComparison,
+  ComparisonState,
+  SummaryState,
+  WeeklySummary,
+} from "./reviewSummaries";
 
 /**
  * The Progress "reflection" tab content. Rendered by the progress package.
@@ -29,11 +36,15 @@ import { ThirtyDayReview } from "./ThirtyDayReview";
  */
 export function ReflectionSection({
   range,
+  initialDate,
 }: {
   range: { start: string; end: string };
+  initialDate?: string | null;
 }) {
   const today = todayKey();
-  const [selectedDate, setSelectedDate] = useState(today);
+  const [selectedDate, setSelectedDate] = useState(
+    initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate) ? initialDate : today
+  );
   const [selectedWeek, setSelectedWeek] = useState(() =>
     weekStartMonday(today)
   );
@@ -132,6 +143,28 @@ export function ReflectionSection({
     loadChallenge();
   }, [loadChallenge]);
 
+  // ---- weekly review data: the selected week's real behavioral summary ----
+  // Selected week → date-range query → existing analytics functions → the
+  // form's summary slot. No duplicated calculations anywhere.
+  const weekRange = useMemo(
+    () => ({ start: selectedWeek, end: addDays(selectedWeek, 6) }),
+    [selectedWeek]
+  );
+  const weekData = useRangeData(weekRange);
+
+  // ---- 30-day review data: first-7 vs final-7 of the CHALLENGE ----
+  const challengeStart = challenge?.start_date ?? null;
+  const challengeDuration = challenge?.duration_days ?? null;
+  const challengeRange = useMemo(() => {
+    if (!challengeStart || !challengeDuration) return null;
+    const fullEnd = addDays(challengeStart, challengeDuration - 1);
+    return {
+      start: challengeStart,
+      end: fullEnd < today ? fullEnd : today,
+    };
+  }, [challengeStart, challengeDuration, today]);
+  const challengeData = useRangeData(challengeRange);
+
   return (
     <div className="flex flex-col gap-4">
       {/* journal frequency + entry dates */}
@@ -220,6 +253,15 @@ export function ReflectionSection({
             <WeeklyReviewForm
               weekStart={selectedWeek}
               onWeekChange={setSelectedWeek}
+              summary={
+                <SummaryState
+                  loading={weekData.loading}
+                  error={weekData.error}
+                  onRetry={weekData.refresh}
+                >
+                  <WeeklySummary data={weekData} weekStart={selectedWeek} />
+                </SummaryState>
+              }
             />
           </div>
         )}
@@ -232,6 +274,22 @@ export function ReflectionSection({
           <LoadingBlock label="Loading challenge…" />
         ) : challengeError ? (
           <ErrorState message={challengeError} onRetry={loadChallenge} />
+        ) : challenge && challengeRange ? (
+          <ThirtyDayReview
+            challenge={challenge}
+            comparison={
+              <ComparisonState
+                loading={challengeData.loading}
+                error={challengeData.error}
+                onRetry={challengeData.refresh}
+              >
+                <ChallengeComparison
+                  data={challengeData}
+                  challenge={challenge}
+                />
+              </ComparisonState>
+            }
+          />
         ) : (
           <ThirtyDayReview challenge={challenge} />
         )}

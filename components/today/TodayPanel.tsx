@@ -8,7 +8,6 @@ import {
   addLimitMinutes,
   logIncident,
   quickLogCount,
-  saveJournal,
 } from "./todayActions";
 import { logReadingPages } from "@/lib/journal";
 import { logFor, type CalendarData } from "@/components/calendar/useCalendarData";
@@ -55,8 +54,6 @@ export function TodayPanel({
   const [incidentNote, setIncidentNote] = useState("");
   const [limitToLog, setLimitToLog] = useState<UsageLimit | null>(null);
   const [minutes, setMinutes] = useState("15");
-  const [journalOpen, setJournalOpen] = useState(false);
-  const [journalBody, setJournalBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
 
@@ -121,7 +118,7 @@ export function TodayPanel({
   const meditationDone = meditation
     ? logFor(data.habitLogs, meditation.id, dateKey)?.status === "done"
     : false;
-  const journalEntries = extras.records.filter((r) => r.kind === "journal");
+  const journalWritten = extras.journalDates.includes(dateKey);
 
   return (
     <div className="flex flex-col gap-4">
@@ -163,7 +160,12 @@ export function TodayPanel({
             label="Start workout"
             onClick={() => router.push("/training")}
           />
-          <QuickButton label="✎ Journal" onClick={() => setJournalOpen(true)} />
+          <QuickButton
+            label="✎ Journal"
+            onClick={() =>
+              router.push(`/progress?tab=reflection&date=${dateKey}`)
+            }
+          />
         </div>
         <div className="grid grid-cols-3 gap-2 mt-2">
           <div className="surface card-pad !p-3">
@@ -233,23 +235,31 @@ export function TodayPanel({
       {/* reflection */}
       <section aria-label="Reflection">
         <h3 className="section-title mb-2">How was today?</h3>
-        <div className="surface card-pad flex gap-2">
-          <button
-            className="btn-ghost flex-1 !min-h-[44px]"
-            onClick={() =>
-              router.push(`/progress?tab=reflection&date=${dateKey}`)
-            }
-          >
-            Write journal
-          </button>
-          <button
-            className="btn-ghost flex-1 !min-h-[44px]"
-            onClick={() =>
-              router.push(`/progress?tab=reflection&date=${dateKey}`)
-            }
-          >
-            Daily review
-          </button>
+        <div className="surface card-pad flex flex-col gap-2">
+          <div className="flex gap-2">
+            <button
+              className="btn-ghost flex-1 !min-h-[44px]"
+              onClick={() =>
+                router.push(`/progress?tab=reflection&date=${dateKey}`)
+              }
+            >
+              Write journal
+            </button>
+            <button
+              className="btn-ghost flex-1 !min-h-[44px]"
+              onClick={() =>
+                router.push(`/progress?tab=reflection&date=${dateKey}`)
+              }
+            >
+              Daily review
+            </button>
+          </div>
+          {journalWritten && (
+            <p className="text-xs t-secondary" aria-live="polite">
+              <span className="text-emerald-500 font-semibold">✓</span> Journal
+              written today
+            </p>
+          )}
         </div>
       </section>
 
@@ -426,20 +436,6 @@ export function TodayPanel({
         </div>
       </section>
 
-      {/* journal */}
-      {journalEntries.length > 0 && (
-        <section aria-label="Journal">
-          <h3 className="section-title mb-2">Journal</h3>
-          <div className="surface card-pad flex flex-col gap-3">
-            {journalEntries.map((j) => (
-              <p key={j.id} className="text-sm t-primary whitespace-pre-wrap">
-                {j.body}
-              </p>
-            ))}
-          </div>
-        </section>
-      )}
-
       {/* incident modal */}
       {incidentRule && (
         <Modal
@@ -545,38 +541,6 @@ export function TodayPanel({
         </Modal>
       )}
 
-      {/* journal modal */}
-      {journalOpen && (
-        <Modal title="Journal" onClose={() => setJournalOpen(false)}>
-          <div className="flex flex-col gap-4">
-            <Field label="What's on your mind?">
-              <textarea
-                className="textarea !min-h-[160px]"
-                value={journalBody}
-                onChange={(e) => setJournalBody(e.target.value)}
-                placeholder="Honest, unfiltered. This is for you."
-                autoFocus
-              />
-            </Field>
-            <button
-              className="btn-primary"
-              disabled={busy || !journalBody.trim()}
-              onClick={() =>
-                run(
-                  async () => {
-                    await saveJournal(dateKey, journalBody.trim());
-                    setJournalOpen(false);
-                    setJournalBody("");
-                  },
-                  "Journal entry saved."
-                )
-              }
-            >
-              {busy ? "Saving…" : "Save entry"}
-            </button>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 }

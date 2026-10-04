@@ -6,6 +6,12 @@
 import { ReflectionSection } from "@/components/journal/ReflectionSection";
 import type { Range } from "./types";
 
-export function ReflectionTab({ range }: { range: Range }) {
-  return <ReflectionSection range={range} />;
+export function ReflectionTab({
+  range,
+  initialDate,
+}: {
+  range: Range;
+  initialDate?: string | null;
+}) {
+  return <ReflectionSection range={range} initialDate={initialDate} />;
 }

@@ -121,24 +121,3 @@ export async function logIncident(
   });
   if (error) throw error;
 }
-
-// ---- journal ----
-
-export async function saveJournal(
-  dateKey: string,
-  body: string
-): Promise<void> {
-  const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in.");
-  const { error } = await supabase.from("daily_records").insert({
-    owner: user.id,
-    record_date: dateKey,
-    kind: "journal",
-    title: "Journal",
-    body,
-  });
-  if (error) throw error;
-}

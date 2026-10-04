@@ -61,6 +61,11 @@ const TAB_IDS = TABS.map((t) => t.id);
 function ProgressInner() {
   const searchParams = useSearchParams();
   const initialTab = searchParams.get("tab");
+  const rawDate = searchParams.get("date");
+  // Today links here with ?tab=reflection&date=YYYY-MM-DD so "Write journal"
+  // opens the V3 journal on the intended day. Anything else falls back to today.
+  const initialDate =
+    rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : null;
   const [tab, setTab] = useState<ProgressTab>(
     TAB_IDS.includes(initialTab as ProgressTab)
       ? (initialTab as ProgressTab)
@@ -303,7 +308,9 @@ function ProgressInner() {
       {tab === "study" && <StudyTab data={data} range={range} />}
       {tab === "hifz" && <HifzTab data={data} range={range} />}
       {tab === "reading" && <ReadingTab data={data} range={range} />}
-      {tab === "reflection" && <ReflectionTab range={range} />}
+      {tab === "reflection" && (
+        <ReflectionTab range={range} initialDate={initialDate} />
+      )}
     </div>
   );
 }
