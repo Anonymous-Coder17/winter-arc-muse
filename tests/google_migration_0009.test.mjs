@@ -7,6 +7,10 @@
 //   * google_calendar_connections_one_per_owner — the unique(owner)
 //     constraint, enforced,
 //   * unchanged 0008 behavior (selections cascade, owner isolation).
+// V4.3.1.2: additionally proves the duplicate-connection guard is
+// fail-safe — duplicate connections make migration 0009 abort with a
+// clear error and change nothing (no silent deletion of connections or
+// their cascading calendar selections).
 // It does NOT create any 0009 object manually: if migration 0009 forgets a
 // required table, column, constraint, policy, or index, this test fails.
 //
@@ -83,9 +87,6 @@ before(async () => {
     -- exist for the migration to apply, even though this test runs as app_user.
     create role authenticated nosuperuser;
     grant usage on schema public, auth to app_user;
-    -- CREATE on public is only for this file's dedupe scratch table; the
-    -- migration under test never needs it.
-    grant create on schema public to app_user;
     grant execute on function auth.uid() to app_user;
   `);
   for (const f of MIGRATIONS) {
@@ -302,51 +303,161 @@ test("migration: deleting the auth.users row purges OAuth transactions (account 
   assert.equal(n, 0, "owner cascade must remove OAuth transactions");
 });
 
-test("migration: dedupe SQL keeps the greatest (updated_at, id) per owner", async () => {
-  // The migration's dedupe runs on an empty table at apply time, so its
-  // row-selection logic is proven here on a scratch table with the exact
-  // same statement shape: keep the survivor with the greatest
-  // (updated_at, id) per owner, delete everything else.
-  await q(
-    `create table dedupe_probe (
-       id uuid primary key,
-       owner uuid not null,
-       updated_at timestamptz not null
-     )`
+// ---------------------------------------------------------------------------
+// V4.3.1.2: the duplicate-connection guard is fail-safe, never destructive.
+//
+// Migration 0009 must detect owners with more than one
+// google_calendar_connections row and abort with a clear error — it must
+// never auto-pick a survivor (deleting a connection cascades to its
+// calendar selections). These tests apply the ACTUAL migration file
+// against a database that has migrations 0001 -> 0008 applied.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fresh PGlite with the auth stub and migrations 0001 -> 0008 applied
+ * (0009 NOT applied), so tests can attempt 0009 against controlled data.
+ * Setup inserts run as the superuser (bypassing RLS) — what matters is
+ * the data state the guard inspects, not which role inserted it.
+ * apply0009 runs with migration privileges, like the real runner.
+ */
+async function dbThrough0008() {
+  const fresh = new PGlite();
+  await fresh.exec(`
+    create schema auth;
+    create table auth.users(id uuid primary key);
+    create or replace function auth.uid() returns uuid
+      language sql stable as $$ select current_setting('app.user_id', true)::uuid $$;
+    insert into auth.users(id) values ('${A}'::uuid), ('${B}'::uuid);
+    create role app_user nosuperuser login;
+    create role authenticated nosuperuser;
+    grant usage on schema public, auth to app_user;
+    grant execute on function auth.uid() to app_user;
+  `);
+  for (const f of MIGRATIONS.slice(0, 8)) {
+    await fresh.exec(readFileSync(join(ROOT, "supabase", "migrations", f), "utf8"));
+  }
+  await fresh.exec(`grant all on all tables in schema public to app_user`);
+  return fresh;
+}
+
+async function apply0009(fresh) {
+  return fresh.exec(
+    readFileSync(join(ROOT, "supabase", "migrations", "0009_google_oauth_hardening.sql"), "utf8")
   );
-  await q(
-    `insert into dedupe_probe(id, owner, updated_at) values
-       ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '${A}', '2026-10-01T00:00:00Z'),
-       ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '${A}', '2026-10-02T00:00:00Z'),
-       ('cccccccc-cccc-cccc-cccc-cccccccccccc', '${A}', '2026-10-02T00:00:00Z'),
-       ('dddddddd-dddd-dddd-dddd-dddddddddddd', '${B}', '2026-10-01T00:00:00Z')`
+}
+
+async function connectionCount(fresh, owner) {
+  const r = await fresh.query(
+    `select count(*)::int as n from google_calendar_connections where owner = $1`,
+    [owner]
+  );
+  return r.rows[0].n;
+}
+
+async function selectionCount(fresh, owner) {
+  const r = await fresh.query(
+    `select count(*)::int as n from google_calendar_selections where owner = $1`,
+    [owner]
+  );
+  return r.rows[0].n;
+}
+
+async function hasOnePerOwnerConstraint(fresh) {
+  const r = await fresh.query(
+    `select count(*)::int as n from pg_constraint
+      where conrelid = 'public.google_calendar_connections'::regclass
+        and conname = 'google_calendar_connections_one_per_owner'`
+  );
+  return r.rows[0].n === 1;
+}
+
+test("guard: clean database — one owner, one connection — migration succeeds", async () => {
+  const fresh = await dbThrough0008();
+  await fresh.query(
+    `insert into google_calendar_connections(owner, google_account_id)
+     values ($1, 'sub-guard-clean')`,
+    [A]
   );
 
-  // Same statement shape as migration 0009's dedupe, table name adapted.
-  await q(
-    `delete from dedupe_probe c
-     where exists (
-       select 1
-         from dedupe_probe survivor
-        where survivor.owner = c.owner
-          and survivor.id <> c.id
-          and (survivor.updated_at, survivor.id) > (c.updated_at, c.id)
-     )`
+  await apply0009(fresh); // must not throw
+  assert.ok(
+    await hasOnePerOwnerConstraint(fresh),
+    "unique(owner) constraint must exist after a clean migration"
+  );
+});
+
+test("guard: duplicate connections — migration fails safely, nothing deleted", async () => {
+  const fresh = await dbThrough0008();
+  const c1 = (
+    await fresh.query(
+      `insert into google_calendar_connections(owner, google_account_id)
+       values ($1, 'sub-guard-dup-1') returning id`,
+      [A]
+    )
+  ).rows[0].id;
+  const c2 = (
+    await fresh.query(
+      `insert into google_calendar_connections(owner, google_account_id)
+       values ($1, 'sub-guard-dup-2') returning id`,
+      [A]
+    )
+  ).rows[0].id;
+  // Selection preservation: one selection on each connection.
+  await fresh.query(
+    `insert into google_calendar_selections(owner, connection_id, google_calendar_id)
+     values ($1, $2, 'cal-dup-1'), ($1, $3, 'cal-dup-2')`,
+    [A, c1, c2]
   );
 
-  const survivors = (
-    await q(`select id, owner from dedupe_probe order by owner, id`)
-  ).rows;
-  assert.deepEqual(
-    survivors.map((r) => r.id),
-    ["cccccccc-cccc-cccc-cccc-cccccccccccc", "dddddddd-dddd-dddd-dddd-dddddddddddd"],
-    "owner A keeps the row with the greatest (updated_at, id) — the updated_at " +
-      "tie breaks on the greater id; owner B's lone row is untouched"
+  let err = null;
+  try {
+    await apply0009(fresh);
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, "migration must fail when an owner has duplicate connections");
+  assert.ok(
+    String(err.message).includes(A),
+    "the failure must identify the offending owner"
   );
-  assert.deepEqual(
-    survivors.map((r) => r.owner),
-    [A, B]
+  assert.ok(
+    String(err.message).toLowerCase().includes("no rows were deleted"),
+    "the failure must promise no silent deletion"
   );
 
-  await q(`drop table dedupe_probe`);
+  // Zero silent deletion: both connections and both selections survive.
+  assert.equal(
+    await connectionCount(fresh, A),
+    2,
+    "both duplicate connections must remain"
+  );
+  assert.equal(
+    await selectionCount(fresh, A),
+    2,
+    "both calendar selections must remain"
+  );
+  assert.ok(
+    !(await hasOnePerOwnerConstraint(fresh)),
+    "the unique(owner) constraint must not be created on failure"
+  );
+});
+
+test("guard: multiple owners, one connection each — migration succeeds", async () => {
+  const fresh = await dbThrough0008();
+  await fresh.query(
+    `insert into google_calendar_connections(owner, google_account_id)
+     values ($1, 'sub-guard-a')`,
+    [A]
+  );
+  await fresh.query(
+    `insert into google_calendar_connections(owner, google_account_id)
+     values ($1, 'sub-guard-b')`,
+    [B]
+  );
+
+  await apply0009(fresh); // must not throw
+  assert.ok(
+    await hasOnePerOwnerConstraint(fresh),
+    "unique(owner) constraint must exist after a clean migration"
+  );
 });

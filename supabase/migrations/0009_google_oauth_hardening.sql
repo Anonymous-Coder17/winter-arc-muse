@@ -13,14 +13,50 @@
 --     successful consume deletes the row, so a transaction id can never be
 --     replayed or used by a different user.
 --   * ONE-ACCOUNT-PER-USER on google_calendar_connections — the integration
---     boundary is a single linked Google account per app user. Existing
---     duplicate rows are deduped first (keep the most recently updated
---     connection per owner; that row's selections cascade and survive),
---     then a unique(owner) constraint is added. The finer-grained
+--     boundary is a single linked Google account per app user. A fail-safe
+--     guard (below) verifies no owner has more than one connection BEFORE
+--     anything else is created: if duplicates exist, the migration aborts
+--     with a clear error and changes NOTHING. It never auto-picks a
+--     survivor and never deletes rows — calendar selections cascade from
+--     the connection, so silent deletion would destroy user data. Once the
+--     data is valid, unique(owner) is added. The finer-grained
 --     unique(owner, google_account_id) from 0008 remains in place.
 --
 -- This migration is additive and safe: no tables, policies, triggers, or
--- functions from 0001-0008 are modified.
+-- functions from 0001-0008 are modified, and it performs no destructive
+-- data changes of its own.
+
+-- ---------------------------------------------------------------------------
+-- duplicate-connection guard: fail safe, never destructive (runs FIRST)
+-- ---------------------------------------------------------------------------
+-- unique(owner) can only be added when the data is already valid. Never
+-- auto-pick a survivor: deleting a duplicate connection would cascade to
+-- its calendar selections and silently destroy user data, so the migration
+-- refuses to proceed instead. The duplicate owner must be resolved
+-- explicitly (choose which connection and its selections to keep) before
+-- re-running this migration.
+do $$
+declare
+  dup_owner uuid;
+  dup_count integer;
+begin
+  select owner, count(*)
+    into dup_owner, dup_count
+    from public.google_calendar_connections
+   group by owner
+  having count(*) > 1
+   limit 1;
+
+  if dup_owner is not null then
+    raise exception
+      'migration 0009 aborted: owner % has % google_calendar_connections rows. '
+      'Resolve the duplicate connections manually (choose which connection and '
+      'its calendar selections to keep), then re-run the migration. '
+      'No rows were deleted.',
+      dup_owner, dup_count
+      using errcode = 'integrity_constraint_violation';
+  end if;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- google_oauth_transactions
@@ -55,18 +91,7 @@ create index if not exists google_oauth_transactions_owner_expires_idx
 -- ---------------------------------------------------------------------------
 -- one account per user on google_calendar_connections
 -- ---------------------------------------------------------------------------
--- Dedupe first: keep exactly one connection per owner — the one with the
--- greatest (updated_at, id), i.e. the most recently updated row. Every other
--- row is deleted; its selections cascade to nothing. Then the constraint can
--- be added safely.
-delete from public.google_calendar_connections c
-where exists (
-  select 1
-    from public.google_calendar_connections survivor
-   where survivor.owner = c.owner
-     and survivor.id <> c.id
-     and (survivor.updated_at, survivor.id) > (c.updated_at, c.id)
-);
-
+-- The guard above has already verified that no owner has more than one
+-- connection, so the constraint can be added safely.
 alter table public.google_calendar_connections
   add constraint google_calendar_connections_one_per_owner unique (owner);
