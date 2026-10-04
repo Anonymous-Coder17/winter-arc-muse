@@ -429,14 +429,16 @@ function gTimed(id, etag, summary, startIso, endIso, extra = {}) {
   };
 }
 
-function gAllDay(id, etag, summary, date) {
+function gAllDay(id, etag, summary, date, endDate = null) {
   return {
     id,
     etag,
     summary,
     status: "confirmed",
     start: { date },
-    end: { date },
+    // Google's end.date is EXCLUSIVE: a single-day event on `date` carries
+    // end.date = date + 1.
+    end: { date: endDate ?? date },
   };
 }
 
@@ -514,6 +516,7 @@ test("mapping A3: all-day event becomes 00:00-23:59 on its date", () => {
   assert.equal(d.event_date, "2026-10-20");
   assert.equal(d.start_time, "00:00");
   assert.equal(d.end_time, "23:59");
+  assert.equal(d.is_all_day, true, "all-day semantics retained on the draft");
 });
 
 test("mapping A4: title/notes truncation, missing summary, missing notes", () => {
@@ -761,9 +764,19 @@ test("sync C1: initial import creates local events + mappings, stores the sync t
           "Yoga class",
           "2026-10-05T04:00:00Z",
           "2026-10-05T05:00:00Z",
-          { description: "Bring a mat" }
+          {
+            description: "Bring a mat",
+            start: {
+              dateTime: "2026-10-05T04:00:00Z",
+              timeZone: "America/New_York",
+            },
+            end: {
+              dateTime: "2026-10-05T05:00:00Z",
+              timeZone: "America/New_York",
+            },
+          }
         ),
-        gAllDay("gev-2", "e2", "Diwali", "2026-10-20"),
+        gAllDay("gev-2", "e2", "Diwali", "2026-10-20", "2026-10-21"),
       ],
       nextSyncToken: "tok-1",
     })
@@ -794,6 +807,7 @@ test("sync C1: initial import creates local events + mappings, stores the sync t
   assert.equal(diwali.event_date, "2026-10-20");
   assert.equal(diwali.start_time, "00:00");
   assert.equal(diwali.end_time, "23:59");
+  assert.equal(diwali.is_all_day, true, "all-day flag set on the local row");
 
   assert.equal(store.google_event_mappings.length, 2);
   for (const m of store.google_event_mappings) {
@@ -801,12 +815,24 @@ test("sync C1: initial import creates local events + mappings, stores the sync t
     assert.equal(m.origin, "google", "imports are Google-origin");
     assert.ok(m.local_event_id, "linked to the local row");
     assert.ok(m.google_event_id, "linked to the Google event");
-    assert.equal(m.google_timezone, "Asia/Kolkata");
     assert.ok(m.last_synced_at, "last_synced_at stamped");
   }
   const map1 = store.google_event_mappings.find((m) => m.google_event_id === "gev-1");
   assert.equal(map1.google_etag, "e1");
   assert.equal(map1.local_event_id, yoga.id);
+  // The mapping preserves the GOOGLE event's timezone — never the display zone.
+  assert.equal(map1.google_timezone, "America/New_York");
+  assert.equal(map1.google_end_timezone, null, "same start/end zone");
+  assert.equal(map1.google_start_date, null, "timed events carry no all-day dates");
+  assert.equal(map1.google_end_date, null);
+  const map2 = store.google_event_mappings.find((m) => m.google_event_id === "gev-2");
+  assert.equal(map2.google_timezone, null, "all-day events have no timezone");
+  assert.equal(map2.google_start_date, "2026-10-20");
+  assert.equal(
+    map2.google_end_date,
+    "2026-10-21",
+    "all-day exclusive end date preserved"
+  );
 
   assert.equal(store.google_calendar_sync_state.length, 1);
   assert.equal(store.google_calendar_sync_state[0].sync_token, "tok-1");
@@ -1213,28 +1239,42 @@ test("sync C14: another user's rows are never touched", async () => {
   );
 });
 
-test("sync C15: events are interpreted in the sync timeZone (America/New_York)", async () => {
+test("sync C15: display uses the sync timeZone, the mapping keeps the Google timezone", async () => {
   const store = makeStore();
   seedConnection(store);
   const g = makeGoogle();
   g.onList(() =>
     jsonRes(200, {
-      items: [gTimed("gev-1", "e1", "Midnight ET", "2026-10-05T04:00:00Z", "2026-10-05T05:00:00Z")],
+      items: [
+        {
+          id: "gev-1",
+          etag: "e1",
+          summary: "Midnight ET",
+          status: "confirmed",
+          // The event's own Google timezone: 00:00–01:00 America/New_York
+          // (EDT, UTC-4 on 2026-10-05).
+          start: { dateTime: "2026-10-05T04:00:00Z", timeZone: "America/New_York" },
+          end: { dateTime: "2026-10-05T05:00:00Z", timeZone: "America/New_York" },
+        },
+      ],
       nextSyncToken: "tok-1",
     })
   );
-  const res = await runSync(store, g, { timeZone: "America/New_York" });
+  // Device is in Asia/Kolkata: local display follows the device zone...
+  const res = await runSync(store, g, { timeZone: "Asia/Kolkata" });
   assert.equal(res.imported, 1);
   const ev = store.calendar_events[0];
-  const s = wallClock("2026-10-05T04:00:00Z", "America/New_York");
-  const e = wallClock("2026-10-05T05:00:00Z", "America/New_York");
+  const s = wallClock("2026-10-05T04:00:00Z", "Asia/Kolkata");
+  const e = wallClock("2026-10-05T05:00:00Z", "Asia/Kolkata");
   assert.equal(ev.event_date, s.date);
   assert.equal(ev.start_time, s.time);
   assert.equal(ev.end_time, e.time);
-  // 04:00Z on 2026-10-05 is 00:00 EDT (UTC-4, DST still in effect).
-  assert.equal(s.date, "2026-10-05");
-  assert.equal(s.time, "00:00");
-  assert.equal(store.google_event_mappings[0].google_timezone, "America/New_York");
+  assert.equal(s.time, "09:30", "04:00Z renders as 09:30 IST");
+  // ...but the mapping preserves the GOOGLE timezone, not the display zone.
+  assert.equal(
+    store.google_event_mappings[0].google_timezone,
+    "America/New_York"
+  );
 });
 
 // ---------------------------------------------------------------------------
