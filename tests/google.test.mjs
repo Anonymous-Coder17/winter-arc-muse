@@ -687,12 +687,32 @@ function readSource(...parts) {
   return readFileSync(join(ROOT, ...parts), "utf8");
 }
 
-test("safety: OAuth callback route validates state against the cookie", () => {
+test("safety: OAuth callback route consumes the server-side transaction and validates state", () => {
+  // V4.3.1.1: the old cookie-carried state scheme is gone. The callback
+  // consumes the server-side transaction row (single-use; deleted on
+  // consume) and validates the returned state against the transaction's
+  // stored state with the timing-safe comparator. The browser cookie holds
+  // only the random transaction id.
   const src = readSource("app/api/google/oauth/callback/route.ts");
   assert.ok(
-    /validateState\(\s*cookie\.state\s*,\s*returnedState\s*\)/.test(src),
-    "callback must compare the returned state against the stored cookie state"
+    /consumeOAuthTransaction\(\s*supabase\s*,\s*user\.id\s*,\s*txnId\s*\)/.test(src),
+    "callback must consume the server-side OAuth transaction for the session user"
   );
+  assert.ok(
+    /validateState\(\s*txn\.state\s*,\s*returnedState\s*\)/.test(src),
+    "callback must compare the returned state against the transaction state"
+  );
+  for (const legacy of [
+    "readOAuthCookie",
+    "cookie.state",
+    "cookie.verifier",
+    "cookie.userId",
+  ]) {
+    assert.ok(
+      !src.includes(legacy),
+      `callback must not use the old cookie-carried scheme (${legacy})`
+    );
+  }
 });
 
 test("safety: disconnect route never touches app data tables", () => {
