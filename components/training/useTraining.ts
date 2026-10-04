@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { seedTrainingDefaultsIfEmpty } from "@/lib/seed";
 import { addDays, todayKey } from "@/lib/dates";
+// Pure helper lives in lib; re-exported here so existing imports keep working.
+export { exercisesFor } from "../../lib/training";
 import type {
   TrainingScheduleRow,
   Workout,
@@ -124,14 +126,4 @@ export function useTraining(startKey?: string, endKey?: string): TrainingData {
     () => ({ workouts, exercises, schedule, sessions, sets, loading, error, refresh }),
     [workouts, exercises, schedule, sessions, sets, loading, error, refresh]
   );
-}
-
-/** Exercises for one workout, in order. */
-export function exercisesFor(
-  exercises: WorkoutExercise[],
-  workoutId: string
-): WorkoutExercise[] {
-  return exercises
-    .filter((e) => e.workout_id === workoutId)
-    .sort((a, b) => a.sort_order - b.sort_order);
 }

@@ -55,7 +55,7 @@ export function SessionLogger({
   const [error, setError] = useState<string | null>(null);
 
   const exList = useMemo(
-    () => exercisesFor(exercises, workout.id),
+    () => exercisesFor(exercises, workout.id, true),
     [exercises, workout.id]
   );
 
@@ -138,6 +138,8 @@ export function SessionLogger({
           owner: user.id,
           session_id: row.session_id,
           exercise_id: row.exercise_id,
+          // Guard column: must equal the session's workout (DB-enforced).
+          workout_id: workout.id,
           set_number: row.set_number,
           reps: row.reps,
           duration_seconds: row.duration_seconds,
@@ -201,6 +203,8 @@ export function SessionLogger({
           owner: user.id,
           session_id: session.id,
           exercise_id: exercise.id,
+          // Guard column: must equal the session's workout (DB-enforced).
+          workout_id: workout.id,
           set_number: num,
           reps: exercise.exercise_type === "reps" ? 0 : null,
           duration_seconds: exercise.exercise_type === "time" ? 0 : null,

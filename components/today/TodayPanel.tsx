@@ -239,7 +239,7 @@ export function TodayPanel({
                 <p className="text-sm font-medium t-primary">{scheduled.name}</p>
                 <p className="text-xs t-secondary">
                   {scheduled.type === "structured"
-                    ? `${exercisesFor(training.exercises, scheduled.id).length} exercises`
+                    ? `${exercisesFor(training.exercises, scheduled.id, true).length} exercises`
                     : (scheduled.description ?? "Completion workout")}
                   {todayWorkoutSession?.status === "completed"
                     ? " · ✓ completed"

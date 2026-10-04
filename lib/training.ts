@@ -58,8 +58,7 @@ export function summarizeExerciseSets(
   return sets.map((s) => `${s.reps ?? 0}`).join(" / ");
 }
 
-/** One-line session summary for history rows. */
-export function summarizeSession(
+/** One-line session summary for history rows. */export function summarizeSession(
   session: WorkoutSession,
   workout: Workout | undefined,
   exercises: WorkoutExercise[],
@@ -155,4 +154,21 @@ export function nextSetNumber(
   return existing.length === 0
     ? 1
     : Math.max(...existing.map((s) => s.set_number)) + 1;
+}
+
+/**
+ * Exercises for one workout, in order.
+ * activeOnly = true for logging/counts (archived exercises stay visible
+ * in history via the default).
+ */
+export function exercisesFor(
+  exercises: WorkoutExercise[],
+  workoutId: string,
+  activeOnly = false
+): WorkoutExercise[] {
+  return exercises
+    .filter(
+      (e) => e.workout_id === workoutId && (!activeOnly || e.is_active)
+    )
+    .sort((a, b) => a.sort_order - b.sort_order);
 }

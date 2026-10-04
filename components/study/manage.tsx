@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { ConfirmInline, Field, Modal } from "@/components/ui";
+import { Field, Modal } from "@/components/ui";
 import { topicsFor } from "./useStudy";
 import type { Subject, Topic } from "@/lib/types";
 
@@ -106,7 +106,6 @@ export function TopicManager({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [editing, setEditing] = useState<Topic | null>(null);
-  const [deleting, setDeleting] = useState<Topic | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -178,22 +177,6 @@ export function TopicManager({
     }
   }
 
-  async function removeTopic(t: Topic) {
-    setBusy(true);
-    setError(null);
-    try {
-      const { supabase } = await authed();
-      const { error } = await supabase.from("topics").delete().eq("id", t.id);
-      if (error) throw error;
-      setDeleting(null);
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete topic.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   function startEdit(t: Topic) {
     setEditing(t);
     setName(t.name);
@@ -238,25 +221,9 @@ export function TopicManager({
               >
                 Edit
               </button>
-              <button
-                className="btn-ghost !min-h-[36px] !px-2.5 text-xs shrink-0 text-red-500 dark:text-red-400"
-                disabled={busy}
-                onClick={() => setDeleting(t)}
-              >
-                Delete
-              </button>
             </li>
           ))}
         </ul>
-      )}
-
-      {deleting && (
-        <ConfirmInline
-          message={`Delete “${deleting.name}”? Past sessions keep working — they just lose the topic link.`}
-          confirmLabel="Delete"
-          onConfirm={() => removeTopic(deleting)}
-          onCancel={() => setDeleting(null)}
-        />
       )}
 
       <div className="surface-elevated card-pad !p-3 flex flex-col gap-3">

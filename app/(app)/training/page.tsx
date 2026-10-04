@@ -70,7 +70,7 @@ export default function TrainingPage() {
               <p className="text-sm font-semibold t-primary">{todaysWorkout.name}</p>
               <p className="text-xs t-secondary">
                 {todaysWorkout.type === "structured"
-                  ? `${exercisesFor(exercises, todaysWorkout.id).length} exercises`
+                  ? `${exercisesFor(exercises, todaysWorkout.id, true).length} exercises`
                   : (todaysWorkout.description ?? "Completion workout")}
                 {todaysSession?.status === "completed" ? " · ✓ completed" : ""}
                 {todaysSession?.status === "in_progress" ? " · in progress" : ""}
@@ -124,7 +124,7 @@ export default function TrainingPage() {
                     </p>
                     <p className="text-xs t-faint">
                       {w.type === "structured"
-                        ? `${exercisesFor(exercises, w.id).length} exercises`
+                        ? `${exercisesFor(exercises, w.id, true).length} exercises`
                         : (w.description ?? "Completion")}
                     </p>
                   </div>

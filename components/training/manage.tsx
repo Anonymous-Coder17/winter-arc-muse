@@ -150,6 +150,8 @@ export function ExerciseManager({
   const [error, setError] = useState<string | null>(null);
 
   const list = exercisesFor(exercises, workout.id);
+  const activeList = list.filter((e) => e.is_active);
+  const archivedList = list.filter((e) => !e.is_active);
 
   async function authed() {
     const supabase = createClient();
@@ -205,27 +207,47 @@ export function ExerciseManager({
   }
 
   async function removeExercise(ex: WorkoutExercise) {
+    // Archive, never destroy: recorded sets stay in history and the
+    // exercise keeps rendering in past sessions.
     setBusy(true);
     setError(null);
     try {
       const { supabase } = await authed();
       const { error } = await supabase
         .from("workout_exercises")
-        .delete()
+        .update({ is_active: false })
         .eq("id", ex.id);
       if (error) throw error;
       setDeleting(null);
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete exercise.");
+      setError(err instanceof Error ? err.message : "Could not remove exercise.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function restoreExercise(ex: WorkoutExercise) {
+    setBusy(true);
+    setError(null);
+    try {
+      const { supabase } = await authed();
+      const { error } = await supabase
+        .from("workout_exercises")
+        .update({ is_active: true })
+        .eq("id", ex.id);
+      if (error) throw error;
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not restore exercise.");
     } finally {
       setBusy(false);
     }
   }
 
   async function move(ex: WorkoutExercise, dir: -1 | 1) {
-    const idx = list.findIndex((e) => e.id === ex.id);
-    const other = list[idx + dir];
+    const idx = activeList.findIndex((e) => e.id === ex.id);
+    const other = activeList[idx + dir];
     if (!other) return;
     setBusy(true);
     try {
@@ -264,7 +286,7 @@ export function ExerciseManager({
         </p>
       ) : (
         <ul className="flex flex-col gap-1.5">
-          {list.map((ex, i) => (
+          {activeList.map((ex, i) => (
             <li
               key={ex.id}
               className="surface card-pad !p-3 flex items-center gap-2"
@@ -287,7 +309,7 @@ export function ExerciseManager({
                 </button>
                 <button
                   className="btn-ghost !min-h-[36px] !px-2 text-xs"
-                  disabled={busy || i === list.length - 1}
+                  disabled={busy || i === activeList.length - 1}
                   onClick={() => move(ex, 1)}
                   aria-label={`Move ${ex.name} down`}
                 >
@@ -310,12 +332,35 @@ export function ExerciseManager({
               </div>
             </li>
           ))}
+          {archivedList.map((ex) => (
+            <li
+              key={ex.id}
+              className="surface card-pad !p-3 flex items-center gap-2 opacity-70"
+            >
+              <div className="flex-1 min-w-0">
+                <p className="text-sm t-primary font-medium">
+                  {ex.name}
+                  <span className="text-xs t-faint font-normal"> · removed</span>
+                </p>
+                <p className="text-xs t-faint">
+                  Still visible in history.
+                </p>
+              </div>
+              <button
+                className="btn-ghost !min-h-[36px] !px-2.5 text-xs shrink-0"
+                disabled={busy}
+                onClick={() => restoreExercise(ex)}
+              >
+                Restore
+              </button>
+            </li>
+          ))}
         </ul>
       )}
 
       {deleting && (
         <ConfirmInline
-          message={`Remove “${deleting.name}”? Its recorded sets stay in history.`}
+          message={`Remove “${deleting.name}” from the workout? Its recorded sets stay in history.`}
           confirmLabel="Remove"
           onConfirm={() => removeExercise(deleting)}
           onCancel={() => setDeleting(null)}

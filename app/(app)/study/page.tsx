@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import {
-  ConfirmInline,
   EmptyState,
   ErrorState,
   LoadingBlock,
@@ -21,7 +20,6 @@ export default function StudyPage() {
   const [addingSubject, setAddingSubject] = useState(false);
   const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
   const [managingTopics, setManagingTopics] = useState<Subject | null>(null);
-  const [deletingSubject, setDeletingSubject] = useState<Subject | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,23 +36,6 @@ export default function StudyPage() {
       data.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update subject.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function deleteSubject(s: Subject) {
-    setBusy(true);
-    setError(null);
-    try {
-      const supabase = createClient();
-      const { error } = await supabase.from("subjects").delete().eq("id", s.id);
-      if (error) throw error;
-      setDeletingSubject(null);
-      if (managingTopics?.id === s.id) setManagingTopics(null);
-      data.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete subject.");
     } finally {
       setBusy(false);
     }
@@ -167,13 +148,6 @@ export default function StudyPage() {
                     >
                       {s.is_active ? "Pause" : "Activate"}
                     </button>
-                    <button
-                      className="btn-ghost !min-h-[40px] !px-3 text-xs shrink-0 text-red-500 dark:text-red-400"
-                      disabled={busy}
-                      onClick={() => setDeletingSubject(s)}
-                    >
-                      Delete
-                    </button>
                   </div>
                   {managingTopics?.id === s.id && (
                     <div className="mt-3 pt-3 border-t hairline">
@@ -187,16 +161,6 @@ export default function StudyPage() {
                 </div>
               );
             })}
-          </div>
-        )}
-        {deletingSubject && (
-          <div className="mt-2">
-            <ConfirmInline
-              message={`Delete “${deletingSubject.name}” and all its topics and sessions? This cannot be undone.`}
-              confirmLabel="Delete"
-              onConfirm={() => deleteSubject(deletingSubject)}
-              onCancel={() => setDeletingSubject(null)}
-            />
           </div>
         )}
       </section>

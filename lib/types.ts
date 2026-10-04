@@ -160,6 +160,8 @@ export interface WorkoutExercise {
   exercise_type: ExerciseType;
   sort_order: number;
   notes: string | null;
+  /** false = archived/removed from the workout; history keeps showing it */
+  is_active: boolean;
 }
 
 export type WorkoutSessionStatus = "in_progress" | "completed" | "cancelled";
@@ -180,6 +182,8 @@ export interface WorkoutSet {
   owner: string;
   session_id: string;
   exercise_id: string;
+  /** Denormalized guard: must equal the session's workout_id (DB-enforced). */
+  workout_id: string;
   set_number: number;
   reps: number | null;
   duration_seconds: number | null;
