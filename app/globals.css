@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  /* ---- app chrome ---- */
+  .app-bg { @apply bg-[#F7F8FA] dark:bg-[#0B0D10]; }
+  .surface { @apply bg-white dark:bg-[#111418] border border-[#E5E7EB] dark:border-[#242932] rounded-2xl; }
+  .surface-elevated { @apply bg-white dark:bg-[#171B21] border border-[#E5E7EB] dark:border-[#242932] rounded-2xl; }
+  .surface-flat { @apply bg-white dark:bg-[#111418]; }
+  .t-primary { @apply text-[#111318] dark:text-[#F5F7FA]; }
+  .t-secondary { @apply text-[#6B7280] dark:text-[#9BA3AF]; }
+  .t-faint { @apply text-[#9AA1AD] dark:text-[#6B7280]; }
+  .hairline { @apply border-[#E5E7EB] dark:border-[#242932]; }
+  .hairline-b { @apply border-b border-[#E5E7EB] dark:border-[#242932]; }
+  .hairline-t { @apply border-t border-[#E5E7EB] dark:border-[#242932]; }
+
+  /* ---- controls ---- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium
+      transition-colors select-none touch-manipulation min-h-[44px]
+      disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-primary { @apply btn bg-[#5A6AE0] hover:bg-[#7C8CF8] text-white; }
+  .btn-secondary { @apply btn bg-transparent border hairline t-primary hover:bg-black/5 dark:hover:bg-white/5; }
+  .btn-ghost { @apply btn t-secondary hover:t-primary hover:bg-black/5 dark:hover:bg-white/5; }
+  .btn-danger { @apply btn bg-transparent border border-red-500/40 text-red-500 dark:text-red-400 hover:bg-red-500/10; }
+
+  .input {
+    @apply w-full rounded-xl border hairline bg-white dark:bg-[#171B21] px-3.5 py-2.5 text-sm t-primary
+      placeholder:text-[#9AA1AD] dark:placeholder:text-[#6B7280]
+      focus:outline-none focus:ring-2 focus:ring-[#7C8CF8]/60 focus:border-[#7C8CF8] min-h-[44px];
+  }
+  .label { @apply block text-xs font-medium t-secondary mb-1.5; }
+  .textarea { @apply input min-h-[96px] resize-y; }
+
+  .seg { @apply inline-flex rounded-xl border hairline p-1 gap-1 bg-white dark:bg-[#111418]; }
+  .seg-btn {
+    @apply px-3.5 py-2 rounded-lg text-sm font-medium t-secondary transition-colors min-h-[40px]
+      hover:t-primary;
+  }
+  .seg-btn-active { @apply bg-[#5A6AE0]/15 text-[#5A6AE0] dark:text-[#AAB6FF] t-primary; }
+  .seg-btn-active { @apply !text-[#3D4AC4] dark:!text-[#C3CCFF] bg-[#E4E8FF] dark:bg-[#5A6AE0]/25; }
+
+  .card-pad { @apply p-4 sm:p-5; }
+  .section-title { @apply text-sm font-semibold t-primary tracking-wide; }
+  .page-title { @apply text-xl sm:text-2xl font-semibold t-primary; }
+  .page-sub { @apply text-sm t-secondary mt-1; }
+}
+
+@layer base {
+  html { -webkit-tap-highlight-color: transparent; }
+  body { @apply app-bg t-primary antialiased; }
+  ::selection { background: #5A6AE0; color: white; }
+}

@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+*.tsbuildinfo
+
+# production
+*.log
+
+# env (never commit secrets)
+.env
+.env*.local
+.env.local
+
+# system
+.DS_Store
+Thumbs.db
+
+# supabase local
+supabase/.branches
+supabase/.temp
