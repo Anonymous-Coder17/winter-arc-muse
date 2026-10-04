@@ -368,15 +368,28 @@ test("increment: mutation identity is account-scoped", async () => {
   const r1 = await remote.applyIncrement(args);
   assert.equal(r1.applied, true, "owner A applies");
   assert.equal(r1.row.minutes_used, 5);
-  // The same mutation id presented by another account is rejected.
-  let err = null;
-  try {
-    await remote.applyIncrement({ ...args, owner_id: USER_B });
-  } catch (e) {
-    err = e;
-  }
-  assert.ok(err, "cross-owner reuse rejects");
-  assert.equal(err.code, "42501", "RLS-style denial code");
+  // The same mutation id presented by another account is an independent
+  // identity (owner_id, mutation_id): it is applied for B on B's own data,
+  // never mistaken for A's already-applied mutation and never dropped.
+  const crossArgs = {
+    ...args,
+    owner_id: USER_B,
+    record_id: "rec-b",
+    seed: { limit_id: "lim-b", log_date: DAY, minutes_used: 0 },
+  };
+  const rCross = await remote.applyIncrement(crossArgs);
+  assert.equal(rCross.applied, true, "cross-owner same id applies independently");
+  assert.equal(rCross.row.minutes_used, 5, "B's delta applied");
+  assert.equal(rCross.row.owner, USER_B, "B's own row");
+  assert.equal(rCross.row.limit_id, "lim-b");
+  // B's retry of the same identity is exactly-once.
+  const rCrossRetry = await remote.applyIncrement(crossArgs);
+  assert.equal(rCrossRetry.applied, false, "B's retry is idempotent");
+  assert.equal(rCrossRetry.row.minutes_used, 5);
+  // A's own retry is still exactly-once and independent of B's row.
+  const r1Retry = await remote.applyIncrement(args);
+  assert.equal(r1Retry.applied, false, "A's retry is idempotent");
+  assert.equal(r1Retry.row.minutes_used, 5);
   // B works on its own natural key: syncs fine, A's remote row untouched.
   const portB = new ports.MemoryPort();
   await asDevice(portB, remote, USER_B, async (dbB) => {
@@ -393,7 +406,7 @@ test("increment: mutation identity is account-scoped", async () => {
   assert.equal(aRow.limit_id, "lim-a");
   assert.equal(aRow.minutes_used, 5, "A's remote row untouched by B");
   assert.equal(bRow.limit_id, "lim-b");
-  assert.equal(bRow.minutes_used, 7, "B's own increment applied");
+  assert.equal(bRow.minutes_used, 12, "B's increments summed (5 + 7)");
 });
 
 test("increment: local write is immediate and marked pending", async () => {

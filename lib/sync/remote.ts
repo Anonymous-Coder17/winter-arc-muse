@@ -207,9 +207,12 @@ export class MemoryRemote implements Remote {
   /** Log of operations for assertions. */
   log: Array<{ table: TableName; op: string; id?: string }> = [];
   /**
-   * V4.2.2 idempotency ledger: mutation_id -> owner. Mirrors the
+   * V4.2.2 idempotency ledger: (owner_id, mutation_id) -> record. Mirrors the
    * sync_applied_mutations table so tests exercise true ledger semantics
-   * (identity-based, never value-equality-based).
+   * (identity-based, never value-equality-based). Mutation identity includes
+   * the owner: the same mutation id under a different account is a different
+   * identity and is applied independently, never mistaken for "already
+   * applied".
    */
   ledger = new Map<string, { owner_id: string; entity: TableName; record_id: string }>();
 
@@ -353,22 +356,22 @@ export class MemoryRemote implements Remote {
   async applyIncrement(args: IncrementArgs): Promise<IncrementResult> {
     this.checkFail();
     this.log.push({ table: args.entity, op: "applyIncrement", id: args.record_id });
-    const known = this.ledger.get(args.mutation_id);
+    // Ledger identity is (owner_id, mutation_id): a retry by the same account
+    // is already-applied; the same mutation id from another account is an
+    // independent identity and is applied normally.
+    const key = `${args.owner_id}:${args.mutation_id}`;
+    const known = this.ledger.get(key);
     if (known) {
-      // A mutation id is bound to the account that first applied it.
-      if (known.owner_id !== args.owner_id) {
-        throw { code: "42501", status: 403, message: "mutation belongs to another account" };
-      }
-      const row = this.findIncrementRow(args.entity, args.record_id, args.seed);
+      const row = this.findIncrementRow(args.entity, args.record_id, args.seed, args.owner_id);
       return { applied: false, row: row ? { ...row } : null };
     }
-    this.ledger.set(args.mutation_id, {
+    this.ledger.set(key, {
       owner_id: args.owner_id,
       entity: args.entity,
       record_id: args.record_id,
     });
     const now = new Date().toISOString();
-    let row = this.findIncrementRow(args.entity, args.record_id, args.seed);
+    let row = this.findIncrementRow(args.entity, args.record_id, args.seed, args.owner_id);
     if (row) {
       row[args.field] = Number(row[args.field] ?? 0) + args.delta;
       row.updated_at = now;
@@ -390,20 +393,25 @@ export class MemoryRemote implements Remote {
   /**
    * Resolve the increment target: by natural unique key when the table has
    * one configured (mirrors the RPC's ON CONFLICT arbiter), else by id
-   * (reading_logs has no natural unique key).
+   * (reading_logs has no natural unique key). The lookup is scoped to the
+   * caller's owner, mirroring RLS: the RPC can only ever touch the calling
+   * user's own rows.
    */
   private findIncrementRow(
     entity: TableName,
     recordId: string,
-    seed: Record<string, any>
+    seed: Record<string, any>,
+    ownerId: string
   ): Record<string, any> | null {
     for (const cols of this.uniques.get(entity) ?? []) {
       if (!cols.every((c) => seed[c] !== undefined)) continue;
       for (const r of this.tableRows(entity).values()) {
+        if (r.owner !== ownerId) continue;
         if (cols.every((c) => r[c] === seed[c])) return r;
       }
       return null;
     }
-    return this.tableRows(entity).get(String(recordId)) ?? null;
+    const byId = this.tableRows(entity).get(String(recordId)) ?? null;
+    return byId && byId.owner === ownerId ? byId : null;
   }
 }

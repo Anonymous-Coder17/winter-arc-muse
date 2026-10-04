@@ -11,9 +11,12 @@
 -- concurrent increments raced on non-atomic read/modify/write.
 --
 -- Fix: a server-side idempotency ledger plus an atomic RPC.
---   * public.sync_applied_mutations records every applied increment mutation
---    (mutation_id PK, owner-scoped). A retried mutation is recognized by its
---    stable identity -- never by comparing numeric values.
+--   * public.sync_applied_mutations records every applied increment mutation.
+--    Mutation identity is (owner_id, mutation_id) -- a composite primary key
+--    -- so identity is scoped by account ownership: User B reusing User A's
+--    mutation id is a *different* identity and is applied independently for
+--    B, never mistaken for "already applied". A retried mutation is
+--    recognized by its stable identity -- never by comparing numeric values.
 --   * public.apply_increment() runs in a single transaction: ledger insert
 --    (ON CONFLICT DO NOTHING) + INSERT ... ON CONFLICT (natural key) DO
 --    UPDATE SET field = field + delta. Concurrent callers serialize on the
@@ -36,13 +39,17 @@
 -- idempotency ledger
 -- ---------------------------------------------------------------------------
 create table if not exists public.sync_applied_mutations (
-  mutation_id uuid primary key,
+  mutation_id uuid not null,
   owner_id    uuid not null references auth.users(id) on delete cascade,
   entity      text not null,
   record_id   uuid not null,
   field       text not null,
   delta       numeric not null,
-  applied_at  timestamptz not null default now()
+  applied_at  timestamptz not null default now(),
+  -- Mutation identity INCLUDES the owner: (owner_id, mutation_id) is the
+  -- uniqueness arbiter. The same mutation id under a different account is a
+  -- different identity and can never be mistaken for "already applied".
+  primary key (owner_id, mutation_id)
 );
 
 alter table public.sync_applied_mutations enable row level security;
@@ -92,13 +99,15 @@ begin
   end if;
 
   -- Idempotency ledger: exactly one application per stable mutation identity.
-  -- owner_id is forced to auth.uid() -- a mutation id can never be recorded
-  -- as applied for another account.
+  -- Identity is (owner_id, mutation_id): owner_id is forced to auth.uid(),
+  -- so a retry is recognized, while another account's same mutation id is a
+  -- different identity and is applied independently -- never swallowed as
+  -- "already applied".
   insert into public.sync_applied_mutations
     (mutation_id, owner_id, entity, record_id, field, delta)
   values
     (p_mutation_id, auth.uid(), p_entity, p_record_id, p_field, p_delta)
-  on conflict (mutation_id) do nothing
+  on conflict (owner_id, mutation_id) do nothing
   returning mutation_id into v_applied;
 
   if v_applied is null then
