@@ -23,6 +23,33 @@ export interface RemoteTable {
 
 export interface Remote {
   table(name: TableName): RemoteTable;
+  /**
+   * V4.2.2 atomic increment. Applies `delta` to `field` exactly once per
+   * stable `mutation_id` (server-side idempotency ledger), creating the row
+   * from `seed` when the natural key / id does not exist yet.
+   * `seed` carries the natural-key columns plus the other insert columns
+   * (no id/owner/field/timestamps, no local `_` meta). `owner_id` scopes the
+   * mutation identity to the authenticated account.
+   */
+  applyIncrement(args: IncrementArgs): Promise<IncrementResult>;
+}
+
+export interface IncrementArgs {
+  mutation_id: string;
+  owner_id: string;
+  entity: TableName;
+  record_id: string;
+  field: string;
+  delta: number;
+  seed: Record<string, any>;
+  created_at: string;
+}
+
+export interface IncrementResult {
+  /** False when the mutation was already applied (retry after lost response). */
+  applied: boolean;
+  /** The resulting row, or null when it is not visible to the caller. */
+  row: Record<string, any> | null;
 }
 
 export type FailureKind =
@@ -64,6 +91,7 @@ export function classifyRemoteError(err: any): FailureKind {
 
 type SupabaseClientLike = {
   from(table: string): any;
+  rpc(fn: string, args?: Record<string, any>): PromiseLike<{ data: any; error: any }>;
 };
 
 /** Production remote: the authenticated browser Supabase client (RLS applies). */
@@ -140,6 +168,27 @@ export class SupabaseRemote implements Remote {
       },
     };
   }
+
+  /**
+   * Production atomic increment: one RPC call, one server transaction.
+   * The ledger + INSERT ... ON CONFLICT DO UPDATE inside apply_increment
+   * make concurrent increments commutative and retries exactly-once.
+   * RLS applies to the caller (SECURITY INVOKER); no service-role keys.
+   */
+  async applyIncrement(args: IncrementArgs): Promise<IncrementResult> {
+    const { data, error } = await this.getClient().rpc("apply_increment", {
+      p_mutation_id: args.mutation_id,
+      p_entity: args.entity,
+      p_record_id: args.record_id,
+      p_field: args.field,
+      p_delta: args.delta,
+      p_seed: args.seed,
+      p_created_at: args.created_at,
+    });
+    if (error) throw error;
+    const d = data as { applied?: boolean; row?: Record<string, any> | null } | null;
+    return { applied: !!d?.applied, row: d?.row ?? null };
+  }
 }
 
 /**
@@ -157,6 +206,12 @@ export class MemoryRemote implements Remote {
   offline = false;
   /** Log of operations for assertions. */
   log: Array<{ table: TableName; op: string; id?: string }> = [];
+  /**
+   * V4.2.2 idempotency ledger: mutation_id -> owner. Mirrors the
+   * sync_applied_mutations table so tests exercise true ledger semantics
+   * (identity-based, never value-equality-based).
+   */
+  ledger = new Map<string, { owner_id: string; entity: TableName; record_id: string }>();
 
   private tableRows(t: TableName): Map<string, Record<string, any>> {
     let m = this.rows.get(t);
@@ -288,5 +343,67 @@ export class MemoryRemote implements Remote {
         self.tableRows(name).delete(String(id));
       },
     };
+  }
+
+  /**
+   * In-memory mirror of the apply_increment RPC: ledger-gated, atomic
+   * insert-or-add. The whole check-and-act runs synchronously (no awaits
+   * between ledger insert and row update), modelling the server transaction.
+   */
+  async applyIncrement(args: IncrementArgs): Promise<IncrementResult> {
+    this.checkFail();
+    this.log.push({ table: args.entity, op: "applyIncrement", id: args.record_id });
+    const known = this.ledger.get(args.mutation_id);
+    if (known) {
+      // A mutation id is bound to the account that first applied it.
+      if (known.owner_id !== args.owner_id) {
+        throw { code: "42501", status: 403, message: "mutation belongs to another account" };
+      }
+      const row = this.findIncrementRow(args.entity, args.record_id, args.seed);
+      return { applied: false, row: row ? { ...row } : null };
+    }
+    this.ledger.set(args.mutation_id, {
+      owner_id: args.owner_id,
+      entity: args.entity,
+      record_id: args.record_id,
+    });
+    const now = new Date().toISOString();
+    let row = this.findIncrementRow(args.entity, args.record_id, args.seed);
+    if (row) {
+      row[args.field] = Number(row[args.field] ?? 0) + args.delta;
+      row.updated_at = now;
+    } else {
+      row = {
+        id: String(args.record_id),
+        owner: args.owner_id,
+        ...args.seed,
+        [args.field]: args.delta,
+        created_at: args.created_at ?? now,
+        updated_at: now,
+      };
+      this.checkUnique(args.entity, row);
+      this.tableRows(args.entity).set(String(args.record_id), row);
+    }
+    return { applied: true, row: { ...row } };
+  }
+
+  /**
+   * Resolve the increment target: by natural unique key when the table has
+   * one configured (mirrors the RPC's ON CONFLICT arbiter), else by id
+   * (reading_logs has no natural unique key).
+   */
+  private findIncrementRow(
+    entity: TableName,
+    recordId: string,
+    seed: Record<string, any>
+  ): Record<string, any> | null {
+    for (const cols of this.uniques.get(entity) ?? []) {
+      if (!cols.every((c) => seed[c] !== undefined)) continue;
+      for (const r of this.tableRows(entity).values()) {
+        if (cols.every((c) => r[c] === seed[c])) return r;
+      }
+      return null;
+    }
+    return this.tableRows(entity).get(String(recordId)) ?? null;
   }
 }

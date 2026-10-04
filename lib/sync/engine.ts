@@ -679,52 +679,72 @@ class SyncEngine {
     return "ok";
   }
 
+  /**
+   * V4.2.2 atomic increment replay.
+   *
+   * The mutation is applied by the server-side apply_increment RPC, which is
+   * idempotent per stable mutation_id (ledger) and atomic (single-statement
+   * insert-or-add). The engine performs NO client-side read/modify/write and
+   * NEVER treats `remote_value === base + delta` as proof of application --
+   * that heuristic lost concurrent increments (two devices +5/+5 from 20
+   * converged to 25 instead of 30).
+   *
+   * Properties: commutative (order-independent), retry-safe (lost response +
+   * same-mutation retry applies exactly once), concurrent-safe (independent
+   * increments all survive), crash-safe (the mutation stays queued until the
+   * RPC confirms; a retry after a crash hits the ledger, not the value).
+   */
   private async execIncrement(
     port: DbPort,
     R: RemoteTable,
     m: Mutation
   ): Promise<Outcome> {
     const field = m.field!;
-    const delta = m.delta!;
-    const base = m.base ?? 0;
-    const cols = m.natural_key_cols ?? [];
+    const delta = m.delta ?? 0;
+    if (!delta) return "ok";
     const local = (await port.get(m.entity, m.record_id)) as LocalRow | null;
     if (!local || local._deleted) return "ok";
-    const keyVals: Record<string, unknown> = {};
-    for (const c of cols) keyVals[c] = (local as any)[c];
-    const remote = cols.length
-      ? await R.getByNatural(keyVals)
-      : await R.getById(m.record_id);
-    if (remote && String((remote as any).id) !== m.record_id) {
-      // Natural-key race: adopt the cloud row, apply our delta on top of it.
-      await this.absorbRemote(port, m.entity, remote as Record<string, any>, m.record_id);
+    // Seed = natural-key columns + the other insert columns. The id, owner,
+    // field value and timestamps travel as dedicated RPC arguments (the
+    // server forces owner = auth.uid()).
+    const seed: Record<string, any> = stripLocalMeta({
+      ...(local as Record<string, any>),
+    });
+    delete seed.id;
+    delete seed.owner;
+    delete seed.created_at;
+    delete seed.updated_at;
+    delete seed[field];
+    const res = await this.remote().applyIncrement({
+      mutation_id: m.mutation_id,
+      owner_id: m.owner_id,
+      entity: m.entity,
+      record_id: m.record_id,
+      field,
+      delta,
+      seed,
+      created_at: (local as any)._local_created_at ?? nowIso(),
+    });
+    const row = res.row;
+    if (!row) {
+      // Applied (or already applied) but the row is not visible to this
+      // account -- e.g. deleted remotely afterwards. The mutation is
+      // consumed; the next pull converges local state.
+      return "ok";
+    }
+    if (String((row as any).id) !== m.record_id) {
+      // Natural-key race: another device's row won the arbiter. Adopt the
+      // cloud row (which already includes our delta) and drop our local id.
+      await this.absorbRemote(port, m.entity, row as Record<string, any>, m.record_id);
       await this.logConflict(
         port,
         m,
         "natural-key-adopted",
-        "Another device created this record first; kept the cloud version and applied the change on top."
+        "Another device created this record first; kept the cloud version with the change merged in."
       );
-      const newVal = Number((remote as any)[field] ?? 0) + delta;
-      const res = await R.upsertById(
-        this.sendable({ ...stripLocalMeta(remote as Record<string, any>), [field]: newVal }, false, m.entity)
-      );
-      await this.absorbRemote(port, m.entity, res);
       return "ok";
     }
-    const rVal = remote ? Number((remote as any)[field] ?? 0) : null;
-    if (rVal !== null && rVal === base + delta) {
-      // A previous attempt already applied this delta (response was lost).
-      await this.absorbRemote(port, m.entity, remote as Record<string, any>);
-      return "ok";
-    }
-    const newVal = (rVal ?? base) + delta;
-    const payload = this.sendable({ ...stripLocalMeta(local), [field]: newVal }, !remote, m.entity);
-    const res = remote
-      ? cols.length
-        ? await R.upsertNatural(payload, cols)
-        : await R.upsertById(payload)
-      : await R.insert(payload);
-    await this.absorbRemote(port, m.entity, res);
+    await this.absorbRemote(port, m.entity, row as Record<string, any>);
     return "ok";
   }
 

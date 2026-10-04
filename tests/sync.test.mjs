@@ -365,15 +365,27 @@ test("idempotency: increment retry after a lost response does not double-count",
   const { port, remote, db } = setup();
   const row = await db.increment("limit_logs", undefined, "minutes_used", 30,
     { limit_id: "lim", log_date: "2026-10-04", minutes_used: 0 }, ["limit_id", "log_date"]);
+  // Simulate the RPC succeeding on the server but the response being lost:
+  // apply the SAME mutation identity directly, leaving it queued, then let
+  // the engine retry it. The ledger -- not the numeric value -- proves it
+  // was already applied.
+  const [m] = await port.list("_mutations", {});
+  const seed = { limit_id: "lim", log_date: "2026-10-04" };
+  const first = await remote.applyIncrement({
+    mutation_id: m.mutation_id,
+    owner_id: m.owner_id,
+    entity: m.entity,
+    record_id: m.record_id,
+    field: m.field,
+    delta: m.delta,
+    seed,
+    created_at: m.created_at,
+  });
+  assert.equal(first.applied, true);
+  assert.equal(first.row.minutes_used, 30);
   await engine2.engine.testSync();
-  assert.equal(remote.rows.get("limit_logs")?.get(row.id)?.minutes_used, 30);
-  // Second increment; simulate the first attempt succeeding remotely but the
-  // response being lost: remote already shows base+delta.
-  await db.increment("limit_logs", row.id, "minutes_used", 30,
-    { limit_id: "lim", log_date: "2026-10-04", minutes_used: 0 }, ["limit_id", "log_date"]);
-  remote.rows.get("limit_logs").get(row.id).minutes_used = 60;
-  await engine2.engine.testSync();
-  assert.equal(remote.rows.get("limit_logs")?.get(row.id)?.minutes_used, 60, "not 90");
+  assert.equal(remote.rows.get("limit_logs")?.get(row.id)?.minutes_used, 30, "not 60");
+  assert.equal((await port.list("_mutations", {})).length, 0, "mutation consumed");
 });
 
 test("idempotency: insert retried after success converges without duplicates", async () => {
