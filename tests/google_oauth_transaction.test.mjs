@@ -641,18 +641,24 @@ function allSourceFiles() {
   ];
 }
 
-test("regression: no service-role key usage in app/lib/components (comments only)", () => {
+test("regression: service-role key usage is isolated to lib/supabase/admin.ts", () => {
+  // V4.8.1: the service-role key is intentionally used in exactly one
+  // place — the server-only admin module for account deletion
+  // (lib/supabase/admin.ts, guarded by `import "server-only"`). Anywhere
+  // else it may only appear in comments.
   const suspicious = [];
   for (const file of allSourceFiles()) {
+    const rel = relative(ROOT, file);
     const lines = readFileSync(file, "utf8").split("\n");
     lines.forEach((line, i) => {
       if (/service-role|SERVICE_ROLE|service_role/i.test(line)) {
         const t = line.trim();
         if (
-          !(t.startsWith("//") || t.startsWith("*") || t.startsWith("/*"))
+          !(t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) &&
+          rel !== join("lib", "supabase", "admin.ts")
         ) {
           suspicious.push(
-            `${relative(ROOT, file)}:${i + 1}: ${t.slice(0, 100)}`
+            `${rel}:${i + 1}: ${t.slice(0, 100)}`
           );
         }
       }
@@ -661,7 +667,7 @@ test("regression: no service-role key usage in app/lib/components (comments only
   assert.deepEqual(
     suspicious,
     [],
-    "service-role may only be mentioned in comments (it is never used)"
+    "service-role may only be used in lib/supabase/admin.ts (elsewhere: comments only)"
   );
 });
 

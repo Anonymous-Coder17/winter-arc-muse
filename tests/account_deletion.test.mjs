@@ -1,4 +1,7 @@
 // V4.8 (Data & Account Safety): account deletion regression tests.
+// V4.8.1 (Complete Account Deletion): the route now also deletes the
+// Supabase Auth identity (auth.users) via a server-only admin client
+// (lib/supabase/admin.ts) AFTER application-data cleanup succeeds.
 //
 // Covers deleteUserAccountData + the /api/account/delete route contract:
 //   (a) deletion removes the user's app data across all user-owned tables,
@@ -7,7 +10,9 @@
 //   (d) Google connection credentials are removed,
 //   (e) wrong confirmation phrase is rejected,
 //   (f) unauthenticated requests are rejected,
-//   (g) deletion is idempotent.
+//   (g) deletion is idempotent,
+//   (h) V4.8.1: the authenticated user's auth.users identity is deleted
+//       via the admin client (session id only), and profiles cascades.
 //
 // DB tests run against PGlite (real Postgres engine, in-process) with the
 // actual project migration chain 0001 -> 0013 and RLS enforced, so FK
@@ -18,11 +23,21 @@
 // google route safety tests use — plus unit tests of the pure confirmation
 // validator the route delegates to.
 //
+// V4.8.1 testing-limitation note (stated plainly, per the release spec):
+// there is no live Supabase Auth service in this environment, so the real
+// `admin.auth.admin.deleteUser()` HTTP call cannot run here. What IS tested
+// for real: (1) deleteAuthUser() drives the admin client's deleteUser with
+// the session user id and propagates failures, using a mock admin client;
+// (2) deleting the identity row from auth.users cascades to profiles and
+// leaves other users untouched, exercised as real SQL in PGlite. In
+// production the Auth API performs the equivalent identity deletion, which
+// triggers the same ON DELETE CASCADE to profiles.
+//
 // Run with:
 //   TZ='Asia/Kolkata' node --test --import ./tests/hooks.mjs tests/account_deletion.test.mjs
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
@@ -32,6 +47,7 @@ import {
   DELETE_CONFIRMATION_PHRASE,
   isDeleteConfirmationValid,
 } from "@/lib/accountDeletion";
+import { createAdminClient, deleteAuthUser } from "@/lib/supabase/admin";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const A = "11111111-1111-1111-1111-111111111111";
@@ -382,7 +398,7 @@ test("route: wrong confirmation phrase is rejected with 400", () => {
   assert.ok(src.includes("deleteUserAccountData(supabase, user.id)"), "route deletes by SESSION user id only");
 });
 
-test("route: POST only, signs out, safe generic 500, documents auth.users", () => {
+test("route: POST only, signs out, safe generic 500, deletes auth.users", () => {
   const src = readSource("app/api/account/delete/route.ts");
   assert.ok(src.includes("export async function POST"), "POST handler exists");
   assert.ok(!src.match(/export async function GET/), "no GET handler (Next.js rejects with 405)");
@@ -390,8 +406,10 @@ test("route: POST only, signs out, safe generic 500, documents auth.users", () =
   assert.ok(src.includes("Account deletion failed"), "generic 500 message present");
   assert.ok(!src.includes("NextResponse.json({ error: err"), "raw errors never sent to client");
   assert.ok(!src.includes("error.message }"), "raw DB error text never sent to client");
-  assert.ok(src.includes("auth.users"), "route documents that auth.users is NOT deleted here");
-  assert.ok(src.includes("service_role"), "route documents the no-service-role design");
+  assert.ok(src.includes("auth.users"), "route documents auth.users deletion");
+  assert.ok(src.includes("deleteAuthUser(admin, user.id)"), "route deletes auth.users by SESSION user id only");
+  assert.ok(src.includes("createAdminClient()"), "route fails fast when the admin client cannot be created");
+  assert.ok(!src.includes("body.userId") && !src.includes("body.user_id"), "route never reads a client-provided user id");
 });
 
 // ---------------------------------------------------------------------------
@@ -411,4 +429,148 @@ test("deletion of an account with no data does not error", async () => {
   await asUser(C);
   await deleteUserAccountData(fakeSupabase(), C);
   assert.equal(await countFor("profiles", C), 0);
+});
+
+// ---------------------------------------------------------------------------
+// V4.8.1: complete account deletion — the Supabase Auth identity
+// ---------------------------------------------------------------------------
+
+/** Minimal stand-in for the admin client's auth.admin surface. */
+function fakeAdminClient(deleteUserImpl) {
+  return { auth: { admin: { deleteUser: deleteUserImpl } } };
+}
+
+test("createAdminClient: throws when SUPABASE_SERVICE_ROLE_KEY is missing", () => {
+  const savedKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const savedUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
+  try {
+    assert.throws(() => createAdminClient(), /SUPABASE_SERVICE_ROLE_KEY/);
+  } finally {
+    if (savedKey !== undefined) process.env.SUPABASE_SERVICE_ROLE_KEY = savedKey;
+    if (savedUrl !== undefined) process.env.NEXT_PUBLIC_SUPABASE_URL = savedUrl;
+    else delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+  }
+});
+
+test("createAdminClient: builds an admin client when configured", () => {
+  const savedKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const savedUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
+  try {
+    const admin = createAdminClient();
+    assert.ok(
+      admin && typeof admin.auth?.admin?.deleteUser === "function",
+      "admin client exposes auth.admin.deleteUser"
+    );
+  } finally {
+    if (savedKey !== undefined) process.env.SUPABASE_SERVICE_ROLE_KEY = savedKey;
+    else delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (savedUrl !== undefined) process.env.NEXT_PUBLIC_SUPABASE_URL = savedUrl;
+    else delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+  }
+});
+
+test("deleteAuthUser: calls admin deleteUser with the session user id", async () => {
+  let calledWith = null;
+  const admin = fakeAdminClient(async (id) => {
+    calledWith = id;
+    return { error: null };
+  });
+  await deleteAuthUser(admin, A);
+  assert.equal(calledWith, A, "admin deleteUser receives the session user id");
+});
+
+test("deleteAuthUser: rejects an empty user id", async () => {
+  const admin = fakeAdminClient(async () => ({ error: null }));
+  await assert.rejects(() => deleteAuthUser(admin, ""), /userId is required/);
+  await assert.rejects(() => deleteAuthUser(admin, null), /userId is required/);
+});
+
+test("deleteAuthUser: admin API failures become errors (route maps to safe 500)", async () => {
+  const admin = fakeAdminClient(async () => ({ error: new Error("not found") }));
+  await assert.rejects(() => deleteAuthUser(admin, A), /Auth deletion failed/);
+});
+
+test("deleting auth.users cascades to profiles; other users untouched (real SQL)", async () => {
+  const D = "44444444-4444-4444-4444-444444444444";
+  const E = "55555555-5555-5555-5555-555555555555";
+  // auth.users writes need the superuser role (the test session otherwise
+  // runs as the restricted app_user, mirroring production where only the
+  // Auth admin API can touch identities). Verification also runs as
+  // postgres so RLS row-filtering (app.user_id is left over from earlier
+  // tests) cannot mask the cascade assertions.
+  let profD, authE, profE;
+  await db.exec(`set session authorization postgres`);
+  try {
+    await q(`insert into auth.users(id) values ('${D}'::uuid), ('${E}'::uuid)`);
+    await q(`insert into profiles(id) values ('${D}'::uuid), ('${E}'::uuid)`);
+    // This is the SQL-level equivalent of what admin.auth.admin.deleteUser()
+    // does to the identity row; profiles must follow via ON DELETE CASCADE.
+    await q(`delete from auth.users where id = '${D}'::uuid`);
+    profD = (await q(`select count(*)::int as n from profiles where id = '${D}'::uuid`)).rows[0].n;
+    authE = (await q(`select count(*)::int as n from auth.users where id = '${E}'::uuid`)).rows[0].n;
+    profE = (await q(`select count(*)::int as n from profiles where id = '${E}'::uuid`)).rows[0].n;
+    await q(`delete from auth.users where id = '${E}'::uuid`);
+  } finally {
+    await db.exec(`set session authorization app_user`);
+  }
+  assert.equal(profD, 0, "deleted user's profile cascades away with auth.users");
+  assert.equal(authE, 1, "other user's auth identity untouched");
+  assert.equal(profE, 1, "other user's profile untouched");
+});
+
+test("admin module is server-only; key never uses NEXT_PUBLIC_", () => {
+  const src = readSource("lib/supabase/admin.ts");
+  assert.ok(src.includes('import "server-only"'), "server-only guard present");
+  assert.ok(src.includes("SUPABASE_SERVICE_ROLE_KEY"), "uses the server-only env var");
+  assert.ok(!src.includes("NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY"), "no NEXT_PUBLIC_ service-role variable");
+  assert.ok(src.includes("persistSession: false"), "admin client does not persist a browser session");
+  assert.ok(src.includes("autoRefreshToken: false"), "admin client does not refresh tokens");
+});
+
+test("no client component imports the admin module", () => {
+  const offenders = [];
+  function walk(dir) {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      const st = statSync(p);
+      if (st.isDirectory()) {
+        if (name === "node_modules" || name === ".next") continue;
+        walk(p);
+      } else if (/\.(tsx?|jsx?)$/.test(name)) {
+        const src = readFileSync(p, "utf8");
+        if (/from\s+["']@\/lib\/supabase\/admin["']/.test(src)) offenders.push(p);
+      }
+    }
+  }
+  walk(join(ROOT, "components"));
+  // app/ may only import it from server routes (route.ts / server actions),
+  // never from client components ("use client").
+  function walkApp(dir) {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      const st = statSync(p);
+      if (st.isDirectory()) {
+        walkApp(p);
+      } else if (/\.(tsx?|jsx?)$/.test(name)) {
+        const src = readFileSync(p, "utf8");
+        if (/from\s+["']@\/lib\/supabase\/admin["']/.test(src)) {
+          const isRoute = /(^|\/)route\.tsx?$/.test(p);
+          const isClient = src.includes('"use client"') || src.includes("'use client'");
+          if (!isRoute || isClient) offenders.push(p);
+        }
+      }
+    }
+  }
+  walkApp(join(ROOT, "app"));
+  assert.deepEqual(offenders, [], `admin module imported outside server routes: ${offenders.join(", ")}`);
+});
+
+test("env example documents the service-role key as server-only", () => {
+  const src = readSource(".env.example");
+  assert.ok(src.includes("SUPABASE_SERVICE_ROLE_KEY="), ".env.example declares the key");
+  assert.ok(!src.includes("NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY"), "never a NEXT_PUBLIC_ variable");
 });

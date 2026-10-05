@@ -4,8 +4,10 @@
  * `deleteUserAccountData(supabase, userId)` permanently deletes every row
  * owned by `userId` across all user-owned tables, in dependency order
  * (children before parents), using the session-based RLS-enforced client.
- * There is no service_role key in this app by design, so deletion can only
- * ever touch rows RLS already grants to the session user.
+ * The Supabase Auth identity itself (auth.users) is deleted separately by
+ * the route via the server-only admin client (lib/supabase/admin.ts, V4.8.1)
+ * AFTER this application-data cleanup succeeds — see
+ * app/api/account/delete/route.ts for the ordering and failure semantics.
  *
  * This is DELETION, not archiving: it runs only when the user explicitly
  * asks for it (the /api/account/delete route enforces an explicit typed

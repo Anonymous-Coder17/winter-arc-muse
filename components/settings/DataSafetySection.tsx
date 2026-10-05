@@ -179,6 +179,7 @@ export default function DataSafetySection() {
                 <li>Training, study, Hifz, books, and reading history</li>
                 <li>Journal entries and reviews</li>
                 <li>Your Google Calendar connection (events on Google are not touched)</li>
+                <li>Your login itself — you will need to sign up again to return</li>
               </ul>
               <p className="text-sm t-secondary mt-2">
                 This cannot be undone. Export your data first if you want a copy.

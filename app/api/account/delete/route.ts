@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient, deleteAuthUser } from "@/lib/supabase/admin";
 import { revokeRefreshTokenEnc } from "@/lib/google/server";
 import {
   DELETE_CONFIRMATION_PHRASE,
@@ -9,20 +10,34 @@ import {
 
 export const runtime = "nodejs";
 
-// POST /api/account/delete — permanently delete ALL of the authenticated
-// user's application data (every user-owned table; see lib/accountDeletion.ts
-// for the table order and Google-lifecycle semantics).
+// POST /api/account/delete — permanently delete the authenticated user's
+// Winter Arc account: every user-owned application row (see
+// lib/accountDeletion.ts for the table order and Google-lifecycle
+// semantics) AND the Supabase Auth identity itself (auth.users).
 //
 // Only POST is exported, so GET/PUT/DELETE/etc. are rejected by Next.js
 // (405) — account deletion can never be triggered by a bare link.
 //
-// NOTE on auth.users: the Supabase Auth user record (auth.users) itself is
-// NOT deleted by this route. This app has no service_role key by design
-// (verified: none exists in the codebase), so nothing here can delete an
-// Auth identity; the operator removes it via the Supabase dashboard.
-// Deleting auth.users cascades to profiles (profiles.id references
-// auth.users(id) ON DELETE CASCADE). All application data IS deleted by
-// this route regardless.
+// Auth deletion mechanism: a server-only admin client built from
+// SUPABASE_SERVICE_ROLE_KEY (lib/supabase/admin.ts). The key is never a
+// NEXT_PUBLIC_ variable, never reaches client code, and the admin client
+// is used ONLY for this deletion — ordinary operations keep using the
+// session-based RLS-enforced client.
+//
+// Ordering (failure-safe):
+//   1. Authenticate + validate the typed confirmation.
+//   2. Fail fast if the admin client cannot be created (misconfigured
+//      server) — BEFORE any destructive work, so we never delete app data
+//      and then find we cannot complete the Auth deletion.
+//   3. Best-effort server-side revocation of Google's OAuth grant.
+//   4. Delete application data (idempotent; RLS-enforced session client).
+//   5. Delete auth.users via the admin client. profiles cascades via
+//      profiles.id -> auth.users(id) ON DELETE CASCADE (migration 0001).
+//   6. Best-effort signOut (the identity is already gone).
+// If step 4 or 5 fails the route returns a safe generic 500, never claims
+// the account was deleted, and the operation stays retryable (both steps
+// are idempotent). Google Calendar events are NEVER touched: they live on
+// Google's servers and this route makes no Google Calendar API calls.
 export async function POST(req: Request) {
   const supabase = await createClient();
   const {
@@ -49,6 +64,17 @@ export async function POST(req: Request) {
     );
   }
 
+  // Fail fast before any destructive work: without the service-role key we
+  // cannot complete the Auth deletion, so refuse rather than leaving a
+  // half-deleted account.
+  let admin;
+  try {
+    admin = createAdminClient();
+  } catch (err) {
+    console.error("account deletion misconfigured", err);
+    return NextResponse.json({ error: "Account deletion failed" }, { status: 500 });
+  }
+
   try {
     // Google lifecycle mirrors the disconnect route
     // (app/api/google/oauth/disconnect/route.ts): best-effort server-side
@@ -65,14 +91,25 @@ export async function POST(req: Request) {
       (connections ?? []).map((conn) => revokeRefreshTokenEnc(conn.refresh_token_enc))
     );
 
+    // 1. Application-owned data, via the RLS-enforced session client.
     await deleteUserAccountData(supabase, user.id);
 
-    // The session is over: sign out so no authenticated requests can follow.
-    await supabase.auth.signOut();
+    // 2. The Supabase Auth identity itself. user.id comes from the server
+    // side session above — a client-supplied id can never reach here.
+    await deleteAuthUser(admin, user.id);
+
+    // 3. Session termination. Best-effort: the Auth identity no longer
+    // exists, and the client clears its own cookies/local state too.
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      /* identity already deleted; nothing to revoke server-side */
+    }
 
     return NextResponse.json({ ok: true });
   } catch (err) {
-    // Safe generic 500: raw database errors are never sent to the client.
+    // Safe generic 500: raw database errors, Auth admin errors, and any
+    // service-role details are never sent to the client.
     console.error("account deletion failed", err);
     return NextResponse.json({ error: "Account deletion failed" }, { status: 500 });
   }
