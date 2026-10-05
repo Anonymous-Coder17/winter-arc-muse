@@ -8,6 +8,7 @@ import { engine } from "@/lib/sync/engine";
 import { useTheme } from "@/components/theme";
 import { clearCache as clearGoogleMetaCache } from "@/lib/calendar-providers/googleMeta";
 import GoogleCalendarSection from "@/components/settings/GoogleCalendarSection";
+import DataSafetySection from "@/components/settings/DataSafetySection";
 import {
   EmptyState,
   ErrorState,
@@ -350,9 +351,13 @@ export default function SettingsPage() {
           Your data lives in your own Supabase project, protected by row-level
           security. Only you can read or change your rows.
         </p>
-        <button className="btn-danger" onClick={logout}>
-          Sign out
-        </button>
+        <h3 className="text-sm font-semibold t-primary mb-3">Your data</h3>
+        <DataSafetySection />
+        <div className="border-t border-black/10 dark:border-white/10 mt-5 pt-5">
+          <button className="btn-danger" onClick={logout}>
+            Sign out
+          </button>
+        </div>
       </section>
     </div>
   );
