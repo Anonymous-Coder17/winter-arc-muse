@@ -24,14 +24,13 @@ export function TabBar({
   return (
     <div
       className="flex gap-1 overflow-x-auto pb-1 -mx-1 px-1"
-      role="tablist"
       aria-label="Progress sections"
     >
       {TABS.map((t) => (
         <button
           key={t.id}
-          role="tab"
-          aria-selected={value === t.id}
+          type="button"
+          aria-pressed={value === t.id}
           onClick={() => onChange(t.id)}
           className={`whitespace-nowrap rounded-full px-3.5 py-2 text-sm font-medium transition-colors min-h-[40px] touch-manipulation ${
             value === t.id

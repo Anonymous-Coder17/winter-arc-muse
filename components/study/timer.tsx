@@ -107,19 +107,21 @@ export function StudyTimer({
     persist(t);
   }
 
+  const [announcement, setAnnouncement] = useState<string>("");
+
   function pause() {
     if (!timer || timer.runStart === null) return;
-    persist({
-      ...timer,
-      accumulatedMs: timer.accumulatedMs + Math.max(0, Date.now() - timer.runStart),
-      runStart: null,
-    });
+    const ms =
+      timer.accumulatedMs + Math.max(0, Date.now() - timer.runStart);
+    persist({ ...timer, accumulatedMs: ms, runStart: null });
     setNow(Date.now());
+    setAnnouncement(`Paused at ${formatHMS(ms / 1000)}`);
   }
 
   function resume() {
     if (!timer || timer.runStart !== null) return;
     persist({ ...timer, runStart: Date.now() });
+    setAnnouncement(`Resumed at ${formatHMS(timer.accumulatedMs / 1000)}`);
   }
 
   function cancel() {
@@ -154,6 +156,7 @@ export function StudyTimer({
         duration_seconds: seconds,
       });
       persist(null);
+      setAnnouncement("Timer finished — session saved.");
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save session.");
@@ -187,11 +190,12 @@ export function StudyTimer({
             <p className="text-sm t-secondary mt-0.5">{timerTopic.name}</p>
           )}
         </div>
-        <p
-          className="text-5xl font-semibold t-primary tabular-nums tracking-tight"
-          aria-live="polite"
-        >
+        <p className="text-5xl font-semibold t-primary tabular-nums tracking-tight">
           {formatHMS(elapsedMs / 1000)}
+        </p>
+        {/* State changes only — never the ticking display. */}
+        <p className="sr-only" aria-live="polite">
+          {announcement}
         </p>
         <p className="text-xs t-faint -mt-2">
           {running ? "Timer running" : `Paused · ${formatDuration(elapsedMs / 1000)} so far`}
@@ -230,6 +234,10 @@ export function StudyTimer({
   // -- idle ------------------------------------------------------------------
   return (
     <div className="flex flex-col gap-4">
+      {/* Keeps the "finished" announcement audible after the timer view unmounts. */}
+      <p className="sr-only" aria-live="polite">
+        {announcement}
+      </p>
       <Field label="Subject">
         <select
           className="input"

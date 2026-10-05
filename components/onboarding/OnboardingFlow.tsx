@@ -160,7 +160,7 @@ export function OnboardingFlow() {
         Step {step + 1} of {STEPS.length} · {STEPS[step]}
       </p>
 
-      <div aria-live="polite">
+      <div>
         {step === 0 && (
           <section aria-labelledby="ob-welcome">
             <h1

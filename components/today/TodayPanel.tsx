@@ -343,15 +343,7 @@ export function TodayPanel({
                 router.push(`/progress?tab=reflection&date=${dateKey}`)
               }
             >
-              Write journal
-            </button>
-            <button
-              className="btn-ghost flex-1 !min-h-[44px]"
-              onClick={() =>
-                router.push(`/progress?tab=reflection&date=${dateKey}`)
-              }
-            >
-              Daily review
+              Journal &amp; daily review
             </button>
           </div>
           {journalWritten && (

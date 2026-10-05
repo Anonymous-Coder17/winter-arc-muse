@@ -54,19 +54,6 @@ export async function hasCompletedOnboarding(): Promise<boolean> {
   return rows.length > 0;
 }
 
-/**
- * The user's challenges, newest first. Used by the onboarding gate and the
- * onboarding page to decide whether setup is needed.
- */
-export async function listChallenges(): Promise<Challenge[]> {
-  const db = getDb();
-  const userId = currentUserId();
-  return db.list<Challenge>("challenges", {
-    eq: { owner: userId },
-    order: [{ col: "created_at", ascending: false }],
-  });
-}
-
 export interface OnboardingChallengeInput {
   /** YYYY-MM-DD, challenge-local. */
   startDate: string;

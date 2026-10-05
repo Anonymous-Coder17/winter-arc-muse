@@ -13,6 +13,15 @@ export function todayKey(): string {
 }
 
 /**
+ * Today's date as a UTC YYYY-MM-DD stamp. Use for generated filenames /
+ * export stamps — never for attributing rows to the user's calendar day
+ * (that is todayKey()).
+ */
+export function todayKeyUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
  * Convert an ISO/timestamptz string (always UTC on the wire) to the user's
  * LOCAL day key. Use for attributing timestamped rows (incidents, sessions)
  * to calendar days — never slice(0,10) a UTC string against a local key.

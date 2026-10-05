@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 // ---------------------------------------------------------------------------
 // Primitives used across all pages. Calm, minimal, theme-aware.
@@ -89,15 +89,55 @@ export function Modal({
   children: ReactNode;
   onClose: () => void;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
+    // Remember the opener so focus can be restored on close.
+    openerRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+
+    // Move focus into the dialog: first focusable element, else the title.
+    const panel = panelRef.current;
+    const firstFocusable = panel?.querySelector<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    );
+    (firstFocusable ?? titleRef.current)?.focus();
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      // Trap Tab / Shift+Tab inside the dialog panel.
+      if (e.key === "Tab" && panel) {
+        const focusable = Array.from(
+          panel.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )
+        ).filter((el) => el.offsetParent !== null);
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = "";
+      // Restore focus to whatever opened the dialog.
+      openerRef.current?.focus();
     };
   }, [onClose]);
 
@@ -110,11 +150,14 @@ export function Modal({
       aria-label={title}
     >
       <div
+        ref={panelRef}
         className="surface-elevated w-full sm:max-w-lg max-h-[92dvh] overflow-y-auto rounded-t-3xl sm:rounded-3xl card-pad"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-base font-semibold t-primary">{title}</h2>
+          <h2 ref={titleRef} tabIndex={-1} className="text-base font-semibold t-primary">
+            {title}
+          </h2>
           <button
             className="btn-ghost !min-h-0 !px-3 !py-2"
             onClick={onClose}
@@ -141,12 +184,12 @@ export function SegControl<T extends string>({
   ariaLabel?: string;
 }) {
   return (
-    <div className="seg" role="tablist" aria-label={ariaLabel}>
+    <div className="seg" aria-label={ariaLabel}>
       {options.map((o) => (
         <button
           key={o.value}
-          role="tab"
-          aria-selected={value === o.value}
+          type="button"
+          aria-pressed={value === o.value}
           className={`seg-btn ${value === o.value ? "seg-btn-active" : ""}`}
           onClick={() => onChange(o.value)}
         >

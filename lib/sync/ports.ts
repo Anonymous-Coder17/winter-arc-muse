@@ -6,7 +6,7 @@
  *
  * No browser globals are touched at module import time.
  */
-import { openDB, type DBSchema, type IDBPDatabase } from "idb";
+import { openDB, type IDBPDatabase } from "idb";
 import {
   DB_VERSION,
   type StoreName,

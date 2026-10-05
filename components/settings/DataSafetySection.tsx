@@ -7,6 +7,7 @@ import { engine } from "@/lib/sync/engine";
 import { DB_NAME_PREFIX } from "@/lib/sync/types";
 import { clearCache as clearGoogleMetaCache } from "@/lib/calendar-providers/googleMeta";
 import { DELETE_CONFIRMATION_PHRASE } from "@/lib/accountDeletion";
+import { todayKeyUtc } from "@/lib/dates";
 import { ErrorState } from "@/components/ui";
 
 /**
@@ -45,7 +46,7 @@ export default function DataSafetySection() {
         );
       }
       const blob = await res.blob();
-      const stamp = new Date().toISOString().slice(0, 10);
+      const stamp = todayKeyUtc();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

@@ -17,8 +17,6 @@ export const WEEKDAY_LABELS = [
   "Sunday",
 ];
 
-export const WEEKDAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
 /**
  * The workout planned for a date from the weekly schedule.
  * Returns null for rest days and unscheduled days — the caller renders
