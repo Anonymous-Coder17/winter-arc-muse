@@ -10,6 +10,11 @@ import { PlanTomorrow } from "@/components/calendar/PlanTomorrow";
 import { EmptyState, ErrorState, LoadingBlock, SegControl } from "@/components/ui";
 import { addDays, formatLong, isToday, todayKey } from "@/lib/dates";
 import { challengeDayNumber, daysRemaining } from "@/lib/types";
+import {
+  currentChallengePhase,
+  resolveChallengePhases,
+} from "@/lib/phases";
+import { PhaseOverview } from "@/components/challenge/PhaseOverview";
 import { engine } from "@/lib/sync/engine";
 import { GoogleCalendarProvider } from "@/lib/calendar-providers/google";
 import { triggerGoogleSync } from "@/lib/calendar-providers/googleSyncClient";
@@ -89,6 +94,16 @@ export default function CalendarPage() {
     challenge && dateKey === todayKey()
       ? daysRemaining(challenge, new Date())
       : null;
+  // V4.6: current phase + overview, derived from the challenge dates.
+  // Shown only for the standard 30-day challenge; null otherwise.
+  const phaseNow =
+    challenge && dateKey === todayKey()
+      ? currentChallengePhase(challenge, new Date())
+      : null;
+  const phases =
+    challenge && dateKey === todayKey()
+      ? resolveChallengePhases(challenge, new Date())
+      : null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -99,6 +114,7 @@ export default function CalendarPage() {
             <LoadingBlock label="" />
           </div>
         ) : challenge ? (
+          <>
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="text-[11px] uppercase tracking-[0.18em] t-faint">
@@ -120,6 +136,20 @@ export default function CalendarPage() {
                   ? ` · ${remaining} day${remaining === 1 ? "" : "s"} remaining`
                   : ""}
               </p>
+              {/* V4.6: current phase — contextual, compact, date-derived. */}
+              {phaseNow && (
+                <p className="text-xs t-secondary mt-1.5" aria-label={`Current phase: ${phaseNow.def.name}`}>
+                  <span className="font-semibold uppercase tracking-[0.14em] t-primary">
+                    {phaseNow.def.name}
+                  </span>
+                  <span className="t-faint">
+                    {" "}· Days {phaseNow.def.startDay}–{phaseNow.def.endDay}
+                  </span>
+                  <span className="block mt-0.5 t-faint">
+                    {phaseNow.def.description}
+                  </span>
+                </p>
+              )}
             </div>
             <button
               className="btn-primary shrink-0"
@@ -128,6 +158,9 @@ export default function CalendarPage() {
               Plan tomorrow
             </button>
           </div>
+          {/* V4.6: phase overview — all four phases, date-based state. */}
+          {phases && <PhaseOverview phases={phases} />}
+          </>
         ) : (
           <EmptyState
             title="No active challenge"

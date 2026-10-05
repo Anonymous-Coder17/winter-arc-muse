@@ -14,6 +14,8 @@ import {
   todayKey,
   weekStartMonday,
 } from "@/lib/dates";
+import { phaseForDateKey } from "@/lib/phases";
+import type { Challenge } from "@/lib/types";
 
 const PROMPTS: {
   key: keyof WeeklyReviewFields;
@@ -46,10 +48,13 @@ export function WeeklyReviewForm({
   summary,
   weekStart,
   onWeekChange,
+  challenge,
 }: {
   summary?: ReactNode;
   weekStart?: string;
   onWeekChange?: (weekStartKey: string) => void;
+  /** Optional active challenge — used only to label the review's phase. */
+  challenge?: Challenge | null;
 }) {
   const [internalWeek, setInternalWeek] = useState(
     () => weekStart ?? weekStartMonday(todayKey())
@@ -161,6 +166,14 @@ export function WeeklyReviewForm({
         </div>
         <p className="text-sm t-primary font-medium tabular-nums">
           {formatShort(weekStartKey)} – {formatLong(weekEndKey)}
+          {/* V4.6: phase this week's review occurred during. The week's
+              midpoint is representative; purely date-derived. */}
+          {challenge && (() => {
+            const p = phaseForDateKey(challenge, addDays(weekStartKey, 3));
+            return p ? (
+              <span className="t-faint font-normal"> · {p.def.name}</span>
+            ) : null;
+          })()}
         </p>
       </div>
 

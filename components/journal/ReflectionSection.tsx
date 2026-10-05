@@ -8,6 +8,7 @@ import {
   getWeeklyReview,
 } from "@/lib/journal";
 import type { Challenge, WeeklyReview } from "@/lib/types";
+import { phaseForDateKey } from "@/lib/phases";
 import {
   addDays,
   formatLong,
@@ -203,6 +204,16 @@ export function ReflectionSection({
         <h3 className="section-title mb-2">
           {formatLong(selectedDate)}
           {selectedDate === today && <span className="t-faint"> · today</span>}
+          {/* V4.6: phase context for this journal date, derived from the
+              challenge timeline. Never auto-generates content. */}
+          {challenge && (() => {
+            const p = phaseForDateKey(challenge, selectedDate);
+            return p ? (
+              <span className="t-faint">
+                {" "}· Day {p.dayNumber} · {p.def.name}
+              </span>
+            ) : null;
+          })()}
         </h3>
         <div className="flex flex-col gap-3">
           <JournalEditor date={selectedDate} onDateChange={setSelectedDate} />
@@ -244,6 +255,7 @@ export function ReflectionSection({
             <WeeklyReviewForm
               weekStart={selectedWeek}
               onWeekChange={setSelectedWeek}
+              challenge={challenge}
               summary={
                 <SummaryState
                   loading={weekData.loading}
