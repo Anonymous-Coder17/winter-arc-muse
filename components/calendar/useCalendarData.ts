@@ -48,7 +48,7 @@ export function useCalendarData(startKey: string, endKey: string): CalendarData 
       try {
         await engine.whenReady();
         const db = getDb();
-        const [taskRows, eventRows, habitRows, habitLogRows, challengeRows] =
+        const [taskRows, eventRows, overlapRows, habitRows, habitLogRows, challengeRows] =
           await Promise.all([
             db.list<Task>("tasks", {
               gte: { task_date: startKey },
@@ -57,6 +57,15 @@ export function useCalendarData(startKey: string, endKey: string): CalendarData 
             }),
             db.list<CalendarEvent>("calendar_events", {
               gte: { event_date: startKey },
+              lte: { event_date: endKey },
+              order: [{ col: "start_time", ascending: true }],
+            }),
+            // V4.5: multi-day all-day events that start before the range
+            // but extend into it. gte on end_date skips null end_dates
+            // (the port's null guard), so this only returns genuine
+            // multi-day spans.
+            db.list<CalendarEvent>("calendar_events", {
+              gte: { end_date: startKey },
               lte: { event_date: endKey },
               order: [{ col: "start_time", ascending: true }],
             }),
@@ -93,12 +102,16 @@ export function useCalendarData(startKey: string, endKey: string): CalendarData 
         }
         if (cancelled) return;
         setTasks(taskRows);
+        // V4.5: merge the overlap query, deduping by id.
+        const mergedEvents = new Map<string, CalendarEvent>();
+        for (const e of [...eventRows, ...overlapRows]) mergedEvents.set(e.id, e);
+        const allEventRows = [...mergedEvents.values()];
         setEvents(
           syncedIds
-            ? eventRows.map((e) =>
+            ? allEventRows.map((e) =>
                 syncedIds!.has(e.id) ? { ...e, isGoogleSynced: true } : e
               )
-            : eventRows
+            : allEventRows
         );
         setHabits(habitRows);
         setHabitLogs(habitLogRows);

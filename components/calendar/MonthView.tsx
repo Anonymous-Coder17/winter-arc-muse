@@ -1,10 +1,10 @@
 "use client";
 
 import { useMemo } from "react";
-import { isToday, monthGridStart, toDayKey } from "@/lib/dates";
 import { scheduledWorkoutForDate } from "@/lib/training";
 import type { TrainingData } from "@/components/training/useTraining";
 import type { CalendarData } from "./useCalendarData";
+import { eventCoversDate, isToday, monthGridStart, toDayKey } from "@/lib/dates";
 
 const DOW = ["M", "T", "W", "T", "F", "S", "S"];
 
@@ -52,7 +52,8 @@ export function MonthView({
             : null;
           const items =
             data.tasks.filter((t) => t.task_date === d).length +
-            data.events.filter((e) => e.event_date === d).length +
+            // V4.5: multi-day all-day events count on every date they cover.
+            data.events.filter((e) => eventCoversDate(e, d)).length +
             (scheduled ? 1 : 0);
           const done = data.tasks.filter(
             (t) => t.task_date === d && t.state === "done"

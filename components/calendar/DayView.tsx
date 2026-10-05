@@ -4,10 +4,10 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { getDb } from "@/lib/sync/write";
 import { toggleHabitDone } from "@/lib/habits";
-import { formatLong, isToday, timeLabel } from "@/lib/dates";
 import { EmptyState, Modal, StateDot } from "@/components/ui";
 import { EventForm, TaskForm } from "./forms";
 import { TodayPanel } from "@/components/today/TodayPanel";
+import { eventCoversDate, formatLong, formatShort, isToday, timeLabel } from "@/lib/dates";
 import { logFor, type CalendarData } from "./useCalendarData";
 import { scheduledWorkoutForDate } from "@/lib/training";
 import type { TrainingData } from "@/components/training/useTraining";
@@ -32,11 +32,21 @@ export function DayView({
     () => tasks.filter((t) => t.task_date === dateKey),
     [tasks, dateKey]
   );
+  // V4.5: all-day events render in a dedicated section above the timeline —
+  // never as fake midnight hourly blocks. Multi-day all-day events appear
+  // on every date they cover.
+  const dayAllDay = useMemo(
+    () =>
+      events
+        .filter((e) => e.is_all_day && eventCoversDate(e, dateKey))
+        .sort((a, b) => a.event_date.localeCompare(b.event_date)),
+    [events, dateKey]
+  );
   const dayEvents = useMemo(
     () =>
-      [...events.filter((e) => e.event_date === dateKey)].sort((a, b) =>
-        a.start_time.localeCompare(b.start_time)
-      ),
+      [
+        ...events.filter((e) => !e.is_all_day && e.event_date === dateKey),
+      ].sort((a, b) => a.start_time.localeCompare(b.start_time)),
     [events, dateKey]
   );
 
@@ -95,10 +105,55 @@ export function DayView({
         </div>
       </div>
 
+      {/* all-day events (V4.5): date-level, above the timed timeline */}
+      {dayAllDay.length > 0 && (
+        <section aria-label="All-day events">
+          <h3 className="section-title mb-2">All-day</h3>
+          <div className="surface card-pad flex flex-col gap-1">
+            {dayAllDay.map((e) => {
+              const multiDay =
+                e.end_date != null && e.end_date > e.event_date;
+              return (
+                <button
+                  key={`e-${e.id}`}
+                  onClick={() => setEditingEvent(e)}
+                  className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-left hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                >
+                  <span
+                    className="w-1 self-stretch rounded-full bg-[#7C8CF8]"
+                    aria-hidden
+                  />
+                  <span className="text-sm t-primary flex-1 flex items-center gap-1.5 min-w-0">
+                    <span className="truncate">{e.title}</span>
+                    {e.isGoogleSynced && (
+                      <span
+                        className="inline-flex items-center gap-1 shrink-0"
+                        title="Synced with Google Calendar"
+                        aria-label="Synced with Google Calendar"
+                      >
+                        <StateDot tone="ok" />
+                        <span className="text-[11px] t-faint leading-none">
+                          Google
+                        </span>
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[11px] t-faint shrink-0">
+                    {multiDay
+                      ? `${formatShort(e.event_date)} → ${formatShort(e.end_date!)}`
+                      : "All-day"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* timeline */}
       <section aria-label="Timeline">
         <h3 className="section-title mb-2">Timeline</h3>
-        {dayEvents.length === 0 && dayTasks.length === 0 ? (
+        {dayAllDay.length === 0 && dayEvents.length === 0 && dayTasks.length === 0 ? (
           <EmptyState
             title="Nothing scheduled"
             body="Add a task or event to start shaping this day."

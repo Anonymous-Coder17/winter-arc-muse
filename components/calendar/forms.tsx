@@ -210,6 +210,15 @@ export function EventForm({
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // V4.5: all-day events. When on, the event is stored with is_all_day=true,
+  // 00:00–23:59 filler times (the CHECK (start_time < end_time) must hold),
+  // and an optional inclusive end_date for multi-day spans. Pure calendar
+  // dates — never routed through timezone conversion.
+  const [allDay, setAllDay] = useState(initial?.is_all_day ?? false);
+  const [startDate, setStartDate] = useState(initial?.event_date ?? dateKey);
+  const [endDate, setEndDate] = useState(
+    initial?.end_date ?? initial?.event_date ?? dateKey
+  );
   // V4.3.2: optional Google push for new events. Shown only when Google is
   // connected (from the lightweight meta cache — no network on form open)
   // and the event isn't already mapped (mapped events keep their mapping).
@@ -238,20 +247,51 @@ export function EventForm({
     };
   }, [alreadyMapped]);
 
+  function onToggleAllDay(checked: boolean) {
+    setAllDay(checked);
+    if (checked) {
+      // Timed -> all-day: keep the day; times become filler on save.
+      setStartDate(initial?.event_date ?? dateKey);
+      setEndDate(initial?.end_date ?? initial?.event_date ?? dateKey);
+    } else {
+      // All-day -> timed: the 00:00–23:59 filler must not leak into the
+      // time inputs — default to a sensible morning slot instead.
+      setStart("09:00");
+      setEnd("10:00");
+    }
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!title.trim() || !start || !end) return;
+    if (!title.trim()) return;
+    if (allDay && !startDate) return;
+    if (!allDay && (!start || !end)) return;
     setBusy(true);
     setError(null);
     try {
       const db = getDb();
-      const row = {
-        title: title.trim(),
-        event_date: dateKey,
-        start_time: start,
-        end_time: end,
-        notes: notes.trim() || null,
-      };
+      // Clamp: end date can never precede the start date.
+      const endDateClamped =
+        allDay && endDate >= startDate ? endDate : startDate;
+      const row = allDay
+        ? {
+            title: title.trim(),
+            event_date: startDate,
+            end_date: endDateClamped > startDate ? endDateClamped : null,
+            start_time: "00:00",
+            end_time: "23:59",
+            is_all_day: true,
+            notes: notes.trim() || null,
+          }
+        : {
+            title: title.trim(),
+            event_date: dateKey,
+            end_date: null,
+            start_time: start,
+            end_time: end,
+            is_all_day: false,
+            notes: notes.trim() || null,
+          };
       if (initial) {
         await db.update("calendar_events", initial.id, row);
       } else {
@@ -302,26 +342,59 @@ export function EventForm({
           autoFocus
         />
       </Field>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Start time">
-          <input
-            className="input"
-            type="time"
-            value={start}
-            onChange={(e) => setStart(e.target.value)}
-            required
-          />
-        </Field>
-        <Field label="End time">
-          <input
-            className="input"
-            type="time"
-            value={end}
-            onChange={(e) => setEnd(e.target.value)}
-            required
-          />
-        </Field>
-      </div>
+      <label className="flex items-center gap-2.5 text-sm t-primary cursor-pointer touch-manipulation select-none">
+        <input
+          type="checkbox"
+          className="w-5 h-5 accent-[#5A6AE0] shrink-0"
+          checked={allDay}
+          onChange={(e) => onToggleAllDay(e.target.checked)}
+        />
+        All-day
+      </label>
+      {allDay ? (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Start date">
+            <input
+              className="input"
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              required
+            />
+          </Field>
+          <Field label="End date">
+            <input
+              className="input"
+              type="date"
+              value={endDate}
+              min={startDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              required
+            />
+          </Field>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Start time">
+            <input
+              className="input"
+              type="time"
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
+              required
+            />
+          </Field>
+          <Field label="End time">
+            <input
+              className="input"
+              type="time"
+              value={end}
+              onChange={(e) => setEnd(e.target.value)}
+              required
+            />
+          </Field>
+        </div>
+      )}
       <Field label="Notes (optional)">
         <textarea
           className="textarea"
@@ -376,7 +449,11 @@ export function EventForm({
         </div>
         <button
           className="btn-primary"
-          disabled={busy || !title.trim() || !start || !end}
+          disabled={
+            busy ||
+            !title.trim() ||
+            (allDay ? !startDate : !start || !end)
+          }
         >
           {busy ? "Saving…" : initial ? "Save changes" : "Add event"}
         </button>

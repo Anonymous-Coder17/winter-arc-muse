@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { addDays, formatLong } from "@/lib/dates";
 import { Field, Modal } from "@/components/ui";
 import { getDb } from "@/lib/sync/write";
 import { TaskForm } from "./forms";
 import type { CalendarData } from "./useCalendarData";
+import { addDays, eventCoversDate, formatLong } from "@/lib/dates";
 import type { Habit } from "@/lib/types";
 
 /** Prominent next-day planning: review what's already planned for tomorrow,
@@ -56,7 +56,8 @@ export function PlanTomorrow({
     [tasks, tomorrow]
   );
   const tEvents = useMemo(
-    () => events.filter((e) => e.event_date === tomorrow),
+    // V4.5: multi-day all-day events covering tomorrow are shown too.
+    () => events.filter((e) => eventCoversDate(e, tomorrow)),
     [events, tomorrow]
   );
 
@@ -117,7 +118,9 @@ export function PlanTomorrow({
                 <li key={e.id} className="text-sm t-primary">
                   ▦ {e.title}{" "}
                   <span className="t-faint text-xs">
-                    {e.start_time.slice(0, 5)}–{e.end_time.slice(0, 5)}
+                    {e.is_all_day
+                      ? "All-day"
+                      : `${e.start_time.slice(0, 5)}–${e.end_time.slice(0, 5)}`}
                   </span>
                 </li>
               ))}
