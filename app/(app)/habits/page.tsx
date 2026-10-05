@@ -186,7 +186,7 @@ export default function HabitsPage() {
                         {done && <span>✓</span>}
                       </button>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium t-primary">{h.name}</p>
+                        <p className="text-sm font-medium t-primary break-words">{h.name}</p>
                         <p className="text-xs t-faint">
                           {trackingLabel[h.tracking]} · {h.frequency}
                           {h.frequency === "weekly" && h.weekly_target
@@ -202,7 +202,7 @@ export default function HabitsPage() {
                             : ""}
                         </p>
                         {h.description && (
-                          <p className="text-xs t-secondary mt-0.5">
+                          <p className="text-xs t-secondary mt-0.5 break-words">
                             {h.description}
                           </p>
                         )}

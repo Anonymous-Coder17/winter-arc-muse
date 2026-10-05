@@ -10,7 +10,9 @@
   .surface-flat { @apply bg-white dark:bg-[#111418]; }
   .t-primary { @apply text-[#111318] dark:text-[#F5F7FA]; }
   .t-secondary { @apply text-[#6B7280] dark:text-[#9BA3AF]; }
-  .t-faint { @apply text-[#9AA1AD] dark:text-[#6B7280]; }
+  /* Faint colors verified for contrast (WCAG AA 4.5:1 for small text):
+     light #6E7580 on white ≈ 4.6:1; dark #7E8791 on #0B0D10 ≈ 5.3:1. */
+  .t-faint { @apply text-[#6E7580] dark:text-[#7E8791]; }
   .hairline { @apply border-[#E5E7EB] dark:border-[#242932]; }
   .hairline-b { @apply border-b border-[#E5E7EB] dark:border-[#242932]; }
   .hairline-t { @apply border-t border-[#E5E7EB] dark:border-[#242932]; }
@@ -51,4 +53,6 @@
   html { -webkit-tap-highlight-color: transparent; }
   body { @apply app-bg t-primary antialiased; }
   ::selection { background: #5A6AE0; color: white; }
+  /* Visible keyboard focus for buttons, links, toggles, day cells, nav. */
+  :focus-visible { outline: 2px solid #7C8CF8; outline-offset: 2px; }
 }

@@ -240,7 +240,7 @@ export function DayView({
                             : "idle"
                       }
                     />
-                    <span className="text-[11px] t-faint uppercase tracking-wide hidden sm:inline">
+                    <span className="text-[11px] t-faint uppercase tracking-wide">
                       {t.state === "done"
                         ? "Done"
                         : t.state === "not_done"

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { EmptyState, ErrorState, LoadingBlock } from "@/components/ui";
+import { ErrorState, LoadingBlock } from "@/components/ui";
 import { addDays, formatDuration, todayKey } from "@/lib/dates";
 import {
   findHifzHabitId,

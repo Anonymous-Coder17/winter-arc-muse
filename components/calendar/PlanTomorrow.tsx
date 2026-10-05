@@ -26,6 +26,7 @@ export function PlanTomorrow({
   const [saved, setSaved] = useState(false);
   const [allHabits, setAllHabits] = useState<Habit[]>([]);
   const [habitBusy, setHabitBusy] = useState(false);
+  const [habitError, setHabitError] = useState<string | null>(null);
   const [noteBusy, setNoteBusy] = useState(false);
   const [noteError, setNoteError] = useState<string | null>(null);
 
@@ -64,6 +65,7 @@ export function PlanTomorrow({
   async function toggleHabitActive(habitId: string, isActive: boolean) {
     if (habitBusy) return;
     setHabitBusy(true);
+    setHabitError(null);
     try {
       const db = getDb();
       await db.update("habits", habitId, { is_active: !isActive });
@@ -73,8 +75,12 @@ export function PlanTomorrow({
         )
       );
       refresh();
-    } catch {
-      // Silent here would strand the toggle; refresh to show true state.
+    } catch (err) {
+      // Surface the failure (note-error pattern below) and refresh to show
+      // the true state — a silent toggle would strand the UI.
+      setHabitError(
+        err instanceof Error ? err.message : "Could not update habit."
+      );
       refresh();
     } finally {
       setHabitBusy(false);
@@ -191,6 +197,11 @@ export function PlanTomorrow({
                 </div>
               ))}
             </div>
+          )}
+          {habitError && (
+            <p className="text-sm text-red-500 dark:text-red-400 mt-2" role="alert">
+              {habitError}
+            </p>
           )}
         </section>
 

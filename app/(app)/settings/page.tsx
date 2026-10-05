@@ -353,7 +353,7 @@ export default function SettingsPage() {
         </p>
         <h3 className="text-sm font-semibold t-primary mb-3">Your data</h3>
         <DataSafetySection />
-        <div className="border-t border-black/10 dark:border-white/10 mt-5 pt-5">
+        <div className="hairline-t mt-5 pt-5">
           <button className="btn-danger" onClick={logout}>
             Sign out
           </button>

@@ -26,7 +26,7 @@ export function PhaseOverview({ phases }: { phases: ResolvedPhase[] }) {
           className={`rounded-xl border px-3 py-2.5 ${
             p.state === "current"
               ? "border-[#7C8CF8]/50 bg-[#7C8CF8]/5"
-              : "border-black/10 dark:border-white/10"
+              : "hairline"
           }`}
         >
           <p className="text-xs font-semibold t-primary flex items-center gap-1.5">

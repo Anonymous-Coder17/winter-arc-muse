@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { scheduledWorkoutForDate } from "@/lib/training";
 import type { TrainingData } from "@/components/training/useTraining";
 import type { CalendarData } from "./useCalendarData";
-import { eventCoversDate, isToday, monthGridStart, toDayKey } from "@/lib/dates";
+import { eventCoversDate, formatShort, isToday, monthGridStart, toDayKey } from "@/lib/dates";
 
 const DOW = ["M", "T", "W", "T", "F", "S", "S"];
 
@@ -64,6 +64,7 @@ export function MonthView({
               key={d}
               onClick={() => onSelectDay(d)}
               disabled={!inMonth}
+              aria-label={`${formatShort(d)}: ${items} ${items === 1 ? "item" : "items"}, ${done} done`}
               className={`flex flex-col items-center rounded-lg py-1.5 min-h-[48px] transition-colors touch-manipulation ${
                 today
                   ? "bg-[#5A6AE0]/15"
@@ -93,6 +94,16 @@ export function MonthView({
       </div>
       <p className="text-xs t-faint mt-3 text-center">
         Tap a day to open it. No scores here — dots only mark what exists.
+      </p>
+      <p className="text-[11px] t-faint mt-2 text-center">
+        <span className="inline-flex items-center gap-1 mr-4">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#7C8CF8]" aria-hidden="true" />
+          Items
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
+          Done
+        </span>
       </p>
     </div>
   );

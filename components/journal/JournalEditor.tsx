@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { EmptyState, ErrorState, Field, LoadingBlock } from "@/components/ui";
+import { ErrorState, Field, LoadingBlock } from "@/components/ui";
 import { getJournalEntry, upsertJournalEntry } from "@/lib/journal";
 import {
   addDays,
@@ -65,7 +65,7 @@ export function JournalEditor({
 
   const dirty = content !== savedContent;
 
-  async function save() {
+  const save = useCallback(async () => {
     if (!content.trim()) return;
     setBusy(true);
     setSaveError(null);
@@ -80,7 +80,17 @@ export function JournalEditor({
     } finally {
       setBusy(false);
     }
-  }
+  }, [content, dateKey]);
+
+  // Debounced autosave: ~1.5s after typing stops, reuse the existing
+  // save path (same upsert, same guards). The manual Save button stays.
+  useEffect(() => {
+    if (loading || error || busy || !dirty) return;
+    const t = setTimeout(() => {
+      void save();
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [loading, error, busy, dirty, save]);
 
   return (
     <div className="surface card-pad flex flex-col gap-3">

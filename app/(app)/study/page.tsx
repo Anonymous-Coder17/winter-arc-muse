@@ -5,7 +5,6 @@ import {
   EmptyState,
   ErrorState,
   LoadingBlock,
-  Modal,
 } from "@/components/ui";
 import { getDb } from "@/lib/sync/write";
 import { useStudy } from "@/components/study/useStudy";
@@ -54,7 +53,7 @@ export default function StudyPage() {
       </div>
 
       {error && (
-        <p className="text-sm text-red-500 dark:text-red-400">{error}</p>
+        <p role="alert" className="text-sm text-red-500 dark:text-red-400">{error}</p>
       )}
 
       {/* timer */}

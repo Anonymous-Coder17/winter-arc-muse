@@ -83,7 +83,7 @@ export default function TrainingPage() {
               {todaysSession?.status === "in_progress"
                 ? "Continue"
                 : todaysSession?.status === "completed"
-                  ? "Log again"
+                  ? "Add another session"
                   : "Start workout"}
             </button>
           </div>

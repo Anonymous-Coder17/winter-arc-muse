@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { buildUserExport } from "@/lib/export";
+import { todayKeyUtc } from "@/lib/dates";
 
 export const runtime = "nodejs";
 
@@ -20,7 +21,7 @@ export async function GET() {
 
   try {
     const payload = await buildUserExport(supabase, user.id);
-    const stamp = new Date().toISOString().slice(0, 10); // UTC YYYY-MM-DD
+    const stamp = todayKeyUtc(); // UTC YYYY-MM-DD
     return NextResponse.json(payload, {
       headers: {
         "Content-Disposition": `attachment; filename="winter-arc-export-${stamp}.json"`,
