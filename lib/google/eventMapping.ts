@@ -46,6 +46,12 @@ export interface LocalEventDraft {
    * events as start.date/end.date.
    */
   is_all_day: boolean;
+  /**
+   * Inclusive last date for multi-day all-day events (V4.5, YYYY-MM-DD).
+   * Null for single-day events. Google's end.date is exclusive, so a
+   * Google span of Oct 10 -> Oct 12 becomes end_date "2026-10-11".
+   */
+  end_date: string | null;
 }
 
 /** Google events.insert / events.update request body (timed events). */
@@ -240,13 +246,22 @@ export function googleEventToLocal(
   const notes = g.description ? truncate(g.description, NOTES_MAX_CHARS) : null;
 
   if (isAllDayGoogleEvent(g)) {
+    const startDate = g.start?.date ?? todayKeyUtc();
+    // Google's end.date is exclusive; the local model stores the inclusive
+    // last date (V4.5), or null for a single day.
+    const range = googleAllDayRange(g);
+    const endInclusive =
+      range && range.endDate > addDays(startDate, 1)
+        ? addDays(range.endDate, -1)
+        : null;
     return {
       title,
-      event_date: g.start?.date ?? todayKeyUtc(),
+      event_date: startDate,
       start_time: "00:00",
       end_time: "23:59",
       notes,
       is_all_day: true,
+      end_date: endInclusive,
     };
   }
 
@@ -272,6 +287,7 @@ export function googleEventToLocal(
         end_time: formatMinutes(endMin),
         notes,
         is_all_day: false,
+        end_date: null,
       };
     }
     return {
@@ -281,6 +297,7 @@ export function googleEventToLocal(
       end_time: e.time,
       notes,
       is_all_day: false,
+      end_date: null,
     };
   }
 
@@ -293,6 +310,7 @@ export function googleEventToLocal(
     end_time: "23:59",
     notes,
     is_all_day: false,
+    end_date: null,
   };
 }
 
@@ -337,7 +355,10 @@ export interface LocalToGoogleOptions {
  * notes (or a genuine local time edit) change it.
  *
  * All-day events: emits start.date/end.date (never dateTime), preserving
- * Google's exclusive-end semantics and the original multi-day span.
+ * Google's exclusive-end semantics and the original multi-day span. For
+ * Google-originated events the span comes from the mapping's preserved
+ * Google dates; for locally-created all-day events it comes from the
+ * row's inclusive end_date (V4.5), defaulting to a single day.
  */
 export function localEventToGoogle(
   e: {
@@ -346,6 +367,8 @@ export function localEventToGoogle(
     start_time: string;
     end_time: string;
     notes: string | null;
+    /** Inclusive last date for multi-day all-day events (V4.5). */
+    end_date?: string | null;
   },
   timeZone: string,
   opts: LocalToGoogleOptions = {}
@@ -357,7 +380,9 @@ export function localEventToGoogle(
     const durationDays =
       opts.googleStartDate && opts.googleEndDate
         ? Math.max(1, diffDays(opts.googleStartDate, opts.googleEndDate))
-        : 1;
+        : e.end_date && e.end_date > e.event_date
+          ? diffDays(e.event_date, e.end_date) + 1
+          : 1;
     return {
       summary,
       ...description,

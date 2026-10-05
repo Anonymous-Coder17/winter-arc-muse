@@ -115,6 +115,20 @@ export interface CalendarEvent {
   end_time: string;
   notes: string | null;
   /**
+   * True for all-day events (V4.5: settable from the event form; previously
+   * only the Google sync importer set this). All-day events keep 00:00–23:59
+   * filler times so the calendar_events CHECK (start_time < end_time) holds;
+   * this flag — not the times — carries the all-day semantics.
+   */
+  is_all_day: boolean;
+  /**
+   * Inclusive last date for multi-day all-day events (V4.5, YYYY-MM-DD).
+   * Null (or equal to event_date) means a single-day event. Only meaningful
+   * when is_all_day is true; timed events keep null. Pure calendar dates —
+   * never timestamps, never shifted by timezone conversion.
+   */
+  end_date: string | null;
+  /**
    * Client-side tag (V4.3.2): set by useCalendarData when the event has a
    * Google sync mapping in the local metadata cache. Not a DB column — never
    * written back to calendar_events.

@@ -153,6 +153,8 @@ interface CalendarEventRow {
   end_time: string;
   /** True for all-day events (Google-originated or created as all-day). */
   is_all_day: boolean;
+  /** Inclusive last date for multi-day all-day events (V4.5); null otherwise. */
+  end_date: string | null;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -339,6 +341,7 @@ async function updateLocalFromDraft(
       start_time: draft.start_time,
       end_time: draft.end_time,
       is_all_day: draft.is_all_day,
+      end_date: draft.end_date,
       notes: draft.notes,
     })
     .eq("id", localEventId)
@@ -477,6 +480,7 @@ async function applyGoogleItem(
         start_time: draft.start_time,
         end_time: draft.end_time,
         is_all_day: draft.is_all_day,
+        end_date: draft.end_date,
         notes: draft.notes,
       })
       .select("id")

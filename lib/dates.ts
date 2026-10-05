@@ -100,3 +100,20 @@ export function formatHMS(totalSeconds: number): string {
   const ss = String(rest).padStart(2, "0");
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
+
+/**
+ * True when a calendar event is visible on the given day key (V4.5,
+ * multi-day aware). Timed events match their single event_date; all-day
+ * events cover every date from event_date through their inclusive end_date
+ * (or just event_date when end_date is null). Pure string comparison on
+ * YYYY-MM-DD keys — no timezone conversion, so an all-day date can never
+ * shift by a day.
+ */
+export function eventCoversDate(
+  e: { event_date: string; end_date?: string | null; is_all_day?: boolean },
+  dateKey: string
+): boolean {
+  if (!e.is_all_day) return e.event_date === dateKey;
+  const end = e.end_date ?? e.event_date;
+  return e.event_date <= dateKey && dateKey <= end;
+}
