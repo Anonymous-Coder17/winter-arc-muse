@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, type ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState, type ReactNode } from "react";
 import { engine } from "@/lib/sync/engine";
+import { hasCompletedOnboarding } from "@/lib/onboarding";
 import { ConnectivityBadge } from "@/components/sync/status";
+import { LoadingBlock } from "@/components/ui";
 
 const NAV = [
   { href: "/calendar", label: "Calendar", icon: "▦" },
@@ -59,7 +61,8 @@ export function AppShell({
     engine.start();
   }, []);
   return (
-    <div className="min-h-dvh app-bg">
+    <OnboardingGate>
+      <div className="min-h-dvh app-bg">
       {/* Desktop: left navigation */}
       <aside className="hidden md:flex fixed inset-y-0 left-0 w-60 flex-col border-r hairline surface-flat px-4 py-6">
         <Link href="/calendar" className="px-2 mb-8">
@@ -109,5 +112,54 @@ export function AppShell({
         </div>
       </nav>
     </div>
+    </OnboardingGate>
   );
+}
+
+/**
+ * V4.7 — first-run gate. A user with no challenge has not completed
+ * onboarding and is sent to /onboarding; everyone else (including
+ * pre-V4.7 users with an existing challenge) enters the app normally.
+ *
+ * Runs after engine.whenReady() so the check sees post-initial-pull state:
+ * a returning user on a fresh device already has their challenges locally
+ * and is never misrouted into onboarding. While checking, renders a plain
+ * loading state — never the app behind a redirect.
+ */
+function OnboardingGate({ children }: { children: ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await engine.whenReady();
+        if (cancelled) return;
+        if (!(await hasCompletedOnboarding())) {
+          router.replace("/onboarding");
+          return;
+        }
+      } catch {
+        // On check failure, fail open into the app: the user keeps their
+        // data and can still set up via Settings. Never trap the user.
+      }
+      if (!cancelled) setChecked(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router, pathname]);
+
+  if (!checked) {
+    return (
+      <div className="min-h-dvh app-bg">
+        <div className="mx-auto max-w-3xl px-4 pt-12">
+          <LoadingBlock label="Loading…" />
+        </div>
+      </div>
+    );
+  }
+  return <>{children}</>;
 }
