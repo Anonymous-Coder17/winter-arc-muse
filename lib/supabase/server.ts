@@ -1,9 +1,14 @@
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import type { CookieMethodsServer } from "@supabase/ssr";
+import { getPublicSupabaseEnvOrThrow } from "@/lib/supabase/env";
 
 /** Supabase client for Server Components / Route Handlers / Server Actions. */
 export async function createClient() {
+  const { url, anonKey } = getPublicSupabaseEnvOrThrow(
+    "Supabase server client misconfigured",
+    { allowBuildFallback: true }
+  );
   const cookieStore = await cookies();
   const cookieMethods: CookieMethodsServer = {
     getAll: () => cookieStore.getAll(),
@@ -17,9 +22,5 @@ export async function createClient() {
       }
     },
   };
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
-    { cookies: cookieMethods }
-  );
+  return createServerClient(url, anonKey, { cookies: cookieMethods });
 }

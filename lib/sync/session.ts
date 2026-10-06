@@ -8,10 +8,7 @@
  * with no connectivity.
  */
 import { createBrowserClient } from "@supabase/ssr";
-
-function env(name: string): string {
-  return process.env[name] ?? "";
-}
+import { getPublicSupabaseEnvOrThrow } from "@/lib/supabase/env";
 
 type BrowserClient = ReturnType<typeof createBrowserClient>;
 
@@ -20,10 +17,10 @@ let shared: BrowserClient | null = null;
 /** Stable per-tab browser client for auth-state subscription. Client-only. */
 export function browserClient(): BrowserClient {
   if (!shared) {
-    shared = createBrowserClient(
-      env("NEXT_PUBLIC_SUPABASE_URL"),
-      env("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    const { url, anonKey } = getPublicSupabaseEnvOrThrow(
+      "Supabase sync session client misconfigured"
     );
+    shared = createBrowserClient(url, anonKey);
   }
   return shared;
 }
