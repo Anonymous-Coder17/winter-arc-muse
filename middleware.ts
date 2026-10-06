@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import type { CookieMethodsServer } from "@supabase/ssr";
+import { getPublicSupabaseEnvError, getPublicSupabaseEnvOrThrow } from "@/lib/supabase/env";
 
 // Refreshes the Supabase auth session on every request so Server Components
 // always see the current user. Redirects unauthenticated users away from
@@ -9,19 +10,21 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
   const isAuthPage = path === "/login" || path === "/signup";
 
-  // No Supabase keys configured yet (fresh clone, .env.local missing):
-  // degrade gracefully instead of 500ing. Auth pages render; everything
-  // else goes to /login where the real error surfaces on submit.
-  if (
-    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  ) {
-    if (!isAuthPage && path !== "/") {
-      return NextResponse.redirect(new URL("/login", request.url));
-    }
-    return NextResponse.next({ request });
+  const envError = getPublicSupabaseEnvError();
+  if (envError) {
+    return NextResponse.json(
+      {
+        error:
+          "Supabase public environment variables are misconfigured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in Vercel, then redeploy.",
+        details: envError,
+      },
+      { status: 500 }
+    );
   }
 
+  const { url, anonKey } = getPublicSupabaseEnvOrThrow(
+    "Supabase middleware client misconfigured"
+  );
   let response = NextResponse.next({ request });
 
   const cookieMethods: CookieMethodsServer = {
@@ -38,16 +41,16 @@ export async function middleware(request: NextRequest) {
   };
 
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
+    url,
+    anonKey,
     { cookies: cookieMethods }
   );
 
   const {
     data: { user },
-  } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
+  } = await supabase.auth.getUser();
 
-  // No session (or auth lookup failed) -> guests can only see auth pages.
+  // No session -> guests can only see auth pages.
   if (!user && !isAuthPage && path !== "/") {
     return NextResponse.redirect(new URL("/login", request.url));
   }
